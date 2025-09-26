@@ -1,17 +1,14 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import os
 from dotenv import load_dotenv
 from slack_sdk import WebClient
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
 load_dotenv(verbose=True)
 
-# Slackクライアントを初期化
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
-# FastAPI アプリ
 app = FastAPI()
-
 
 last_game_name = None
 
@@ -25,7 +22,6 @@ async def receive_result(request: Request):
     now = data.get("timestamp", "不明")
     message = f"【{now}】\n {game_name}"
 
-    # 直前のゲーム名と同じ場合は通知しない
     if game_name != last_game_name:
         slack_client.chat_postMessage(
             channel="#prj_game_shiteruzou",
@@ -37,3 +33,17 @@ async def receive_result(request: Request):
         status = "skipped"
 
     return JSONResponse(content={"status": status, "received": data})
+
+
+@app.post("/events")
+async def slack_events(request: Request):
+    data = await request.json()
+    print("Slack Event Received:", data)
+
+    if data.get("type") == "url_verification":
+        return JSONResponse(content={"challenge": data["challenge"]})
+
+    event = data.get("event", {})
+    print("Event details:", event)
+
+    return JSONResponse(content={"status": "ok"})
