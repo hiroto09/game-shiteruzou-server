@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  fastapi-server:
+    build: .
+    container_name: game-siteruzou-server
+    ports:
+      - "8000:8000"
+    environment:
+      - API_URL=http://0.0.0.0:8000/result
+    restart: unless-stopped
