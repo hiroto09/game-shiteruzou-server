@@ -17,6 +17,7 @@ async def receive_result(request: Request):
     global last_game_name
     data = await request.json()
     print("受け取った推論結果:", data)
+    print("######SLACKTOKENN:", token=os.environ.get("SLACK_BOT_TOKEN"))
 
     game_name = data.get("class", "不明")
     now = data.get("timestamp", "不明")
