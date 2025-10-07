@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from datetime import datetime
-import mysql.connector  # ← MySQL接続用追加
+import mysql.connector  # MySQL接続用
 
 # --- 環境変数読み込み ---
 load_dotenv(verbose=True)
@@ -49,16 +49,15 @@ def save_to_db(game_name: str, timestamp: str):
         except:
             pass
 
-
 @app.post("/result")
 async def receive_result(request: Request):
     global last_game_name, room_status, packet_status
     data = await request.json()
-    print("受け取った推論結果:", data)
+    print("📥 受け取った推論結果:", data)
 
     game_name = data.get("class", "不明")
 
-    # timestamp が指定されていなければ現在時刻を見やすい形式で補完
+    # timestamp が指定されていなければ現在時刻を補完
     raw_now = data.get("timestamp")
     if not raw_now or raw_now == "不明":
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
@@ -70,12 +69,17 @@ async def receive_result(request: Request):
 
     message = f"【{now}】\n {game_name}"
 
-    # packet_status が False の場合、room_status が「何もしていない」以外なら更新しない
-    if packet_status is False and room_status != "何もしていない":
+    # --- packet_status が False の場合の処理 ---
+    if packet_status is False:
+        room_status = "何もしていない"
         status = "skipped_by_packet"
+        print(f"⚠️ packet_status が False のため処理スキップ → room_status: {room_status}, game_name: {game_name}, timestamp: {now}")
     else:
-        # 更新処理
+        # --- ゲーム名が前回と違う場合のみ処理 ---
         if game_name != last_game_name:
+            # Slack送信前ログ
+            print(f"🔔 Slack送信前 → packet_status: {packet_status}, game_name: {game_name}, timestamp: {now}")
+
             # Slack通知
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzou",
@@ -90,6 +94,7 @@ async def receive_result(request: Request):
             status = "notified"
         else:
             status = "skipped"
+            print(f"⏩ 同じゲーム名のため処理スキップ → room_status: {room_status}, game_name: {game_name}, timestamp: {now}")
 
     return JSONResponse(content={
         "status": status,
@@ -99,11 +104,10 @@ async def receive_result(request: Request):
         "formatted_time": now
     })
 
-
 @app.post("/events")
 async def slack_events(request: Request):
     data = await request.json()
-    print("Slack Event Received:", data)
+    print("📥 Slack Event Received:", data)
 
     if data.get("type") == "url_verification":
         return JSONResponse(content={"challenge": data["challenge"]})
@@ -113,12 +117,11 @@ async def slack_events(request: Request):
 
     return JSONResponse(content={"status": "ok"})
 
-
 @app.post("/packet")
 async def receive_packet(request: Request):
     global packet_status
     data = await request.json()
-    print("Packet Received:", data)
+    print("📥 Packet Received:", data)
 
     new_status = data.get("status")
     if isinstance(new_status, bool):
