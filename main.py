@@ -4,16 +4,50 @@ import os
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from datetime import datetime
+import mysql.connector  # ← MySQL接続用追加
 
+# --- 環境変数読み込み ---
 load_dotenv(verbose=True)
 
+# --- Slackクライアント ---
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
+# --- FastAPIアプリ作成 ---
 app = FastAPI()
 
+# --- 状態変数 ---
 last_game_name = None
-room_status = "何もしていない"  # 部屋の状態
-packet_status = False             # デフォルトは False にしておく
+room_status = "何もしていない"
+packet_status = False
+
+# --- MySQL接続設定 ---
+db_config = {
+    "host": os.environ.get("DB_HOST", "db"),
+    "user": os.environ.get("DB_USER", "root"),
+    "password": os.environ.get("DB_PASSWORD", ""),
+    "database": os.environ.get("DB_NAME", "game_results"),
+    "port": int(os.environ.get("DB_PORT", "3306")),
+}
+
+def save_to_db(game_name: str, timestamp: str):
+    """推論結果を MySQL に保存"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO results (game_name, timestamp)
+            VALUES (%s, %s)
+        """, (game_name, timestamp))
+        conn.commit()
+        print(f"✅ DB保存完了: {game_name} ({timestamp})")
+    except Exception as e:
+        print("⚠️ DB保存エラー:", e)
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except:
+            pass
 
 
 @app.post("/result")
@@ -29,11 +63,10 @@ async def receive_result(request: Request):
     if not raw_now or raw_now == "不明":
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     else:
-        # データにある場合でも一度フォーマット変換を試みる
         try:
             now = datetime.fromisoformat(raw_now).strftime("%Y/%m/%d %H:%M:%S")
         except Exception:
-            now = str(raw_now)  # フォーマットできなければそのまま表示
+            now = str(raw_now)
 
     message = f"【{now}】\n {game_name}"
 
@@ -43,10 +76,15 @@ async def receive_result(request: Request):
     else:
         # 更新処理
         if game_name != last_game_name:
+            # Slack通知
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzou",
                 text=message
             )
+
+            # MySQL保存
+            save_to_db(game_name, now)
+
             last_game_name = game_name
             room_status = game_name
             status = "notified"
@@ -89,7 +127,6 @@ async def receive_packet(request: Request):
     else:
         result = "invalid"
 
-    # ここでも更新時刻を見やすい形式で返す
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
     return JSONResponse(content={
