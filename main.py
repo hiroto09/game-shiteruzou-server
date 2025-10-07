@@ -69,32 +69,31 @@ async def receive_result(request: Request):
 
     message = f"【{now}】\n {game_name}"
 
-    # --- packet_status が False の場合の処理 ---
+    # --- packet_status が False の場合は game_name を「何もしていない」に更新するだけ ---
     if packet_status is False:
-        room_status = "何もしていない"
-        status = "skipped_by_packet"
-        print(f"⚠️ packet_status が False のため処理スキップ → room_status: {room_status}, game_name: {game_name}, timestamp: {now}")
+        game_name = "何もしていない"
+        print(f"⚠️ packet_status が False → game_name を「何もしていない」に更新")
+
+    # --- 前回と同じ game_name の場合のみ処理をスキップ ---
+    if game_name == last_game_name:
+        status = "skipped"
+        print(f"⏩ 同じゲーム名のため処理スキップ → last_game_name: {last_game_name}, game_name: {game_name}, timestamp: {now}")
     else:
-        # --- ゲーム名が前回と違う場合のみ処理 ---
-        if game_name != last_game_name:
-            # Slack送信前ログ
-            print(f"🔔 Slack送信前 → packet_status: {packet_status}, game_name: {game_name}, timestamp: {now}")
+        # Slack送信前ログ
+        print(f"🔔 Slack送信前 → packet_status: {packet_status}, game_name: {game_name}, timestamp: {now}")
 
-            # Slack通知
-            slack_client.chat_postMessage(
-                channel="#prj_game_shiteruzou",
-                text=message
-            )
+        # Slack通知
+        slack_client.chat_postMessage(
+            channel="#prj_game_shiteruzou",
+            text=message
+        )
 
-            # MySQL保存
-            save_to_db(game_name, now)
+        # MySQL保存
+        save_to_db(game_name, now)
 
-            last_game_name = game_name
-            room_status = game_name
-            status = "notified"
-        else:
-            status = "skipped"
-            print(f"⏩ 同じゲーム名のため処理スキップ → room_status: {room_status}, game_name: {game_name}, timestamp: {now}")
+        last_game_name = game_name
+        room_status = game_name
+        status = "notified"
 
     return JSONResponse(content={
         "status": status,
@@ -103,6 +102,7 @@ async def receive_result(request: Request):
         "packet_status": packet_status,
         "formatted_time": now
     })
+
 
 @app.post("/events")
 async def slack_events(request: Request):
