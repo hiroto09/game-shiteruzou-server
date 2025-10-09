@@ -11,6 +11,7 @@ load_dotenv(verbose=True)
 
 # --- Slackクライアント ---
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+slack_channel = os.environ.get("SLACK_CHANNEL_ID", "prj_game_shiteruzo")
 
 # --- FastAPIアプリ作成 ---
 app = FastAPI()
@@ -89,7 +90,7 @@ async def receive_result(request: Request):
             if slack_message_ts is None:
                 # 初回のみ投稿
                 res = slack_client.chat_postMessage(
-                    channel="prj_game_shiteruzo",
+                    channel=slack_channel,
                     text=message_text
                 )
                 slack_message_ts = res["ts"]  # ← tsを保存
@@ -97,7 +98,7 @@ async def receive_result(request: Request):
             else:
                 # 2回目以降はメッセージを更新
                 slack_client.chat_update(
-                    channel="prj_game_shiteruzo",
+                    channel=slack_channel,
                     ts=slack_message_ts,
                     text=message_text
                 )
