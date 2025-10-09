@@ -48,15 +48,13 @@ def save_to_db(room_status: str, timestamp: str):
         if 'conn' in locals() and conn:
             conn.close()
 
+
 @app.post("/result")
 async def receive_result(request: Request):
     global last_room_status, room_status, packet_status
     data = await request.json()
-    print("📥 受け取った推論結果:", data)
 
-    room_status = data.get("class", "不明")
-
-    # timestamp が指定されていなければ現在時刻を補完
+    # timestamp 処理
     raw_now = data.get("timestamp")
     if not raw_now or raw_now == "不明":
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
@@ -66,11 +64,16 @@ async def receive_result(request: Request):
         except Exception:
             now = str(raw_now)
 
+    # --- packet_status に応じた処理 ---
     if packet_status is False:
         room_status = "何もしていない"
-        print(f"⚠️ packet_status が False → room_status を「何もしていない」に更新")
+        print(f"⚠️ packet_status=False → 推論結果を無視して room_status を「何もしていない」に設定")
+    else:
+        # packet_status=True の場合のみ受信データを反映
+        room_status = data.get("class", "不明")
+        print("📥 受け取った推論結果:", data)
 
-    # --- 前回と同じ room_status の場合のみ処理をスキップ ---
+    # --- 同じ状態ならスキップ ---
     if room_status == last_room_status:
         status = "skipped"
         print(f"⏩ 同じ状態のため処理スキップ → last_room_status: {last_room_status}, room_status: {room_status}, timestamp: {now}")
@@ -78,11 +81,9 @@ async def receive_result(request: Request):
         # Slack送信前ログ
         print(f"🔔 Slack送信前 → packet_status: {packet_status}, room_status: {room_status}, timestamp: {now}")
 
-        # メッセージ作成
-        message = f"【{now}】\n {room_status}"
-
         # Slack通知
         try:
+            message = f"【{now}】\n {room_status}"
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzou",
                 text=message
@@ -90,7 +91,7 @@ async def receive_result(request: Request):
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
 
-        # MySQL保存
+        # DB保存
         save_to_db(room_status, now)
 
         last_room_status = room_status
