@@ -19,6 +19,7 @@ app = FastAPI()
 last_room_status = "不明"
 room_status = "不明"
 packet_status = False
+slack_message_ts = None  # ← 投稿したメッセージの ts（上書き用）
 
 # --- MySQL接続設定 ---
 db_config = {
@@ -28,6 +29,7 @@ db_config = {
     "database": os.environ.get("DB_NAME", "game_results"),
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
+
 
 def save_to_db(room_status: str, timestamp: str):
     """推論結果を MySQL に保存"""
@@ -51,7 +53,7 @@ def save_to_db(room_status: str, timestamp: str):
 
 @app.post("/result")
 async def receive_result(request: Request):
-    global last_room_status, room_status, packet_status
+    global last_room_status, room_status, packet_status, slack_message_ts
     data = await request.json()
 
     # timestamp 処理
@@ -67,27 +69,40 @@ async def receive_result(request: Request):
     # --- packet_status に応じた処理 ---
     if packet_status is False:
         room_status = "何もしていない"
-        print(f"⚠️ packet_status=False → 推論結果を無視して room_status を「何もしていない」に設定")
+        print(f"⚠️ packet_status=False → room_status を「何もしていない」に設定")
     else:
-        # packet_status=True の場合のみ受信データを反映
         room_status = data.get("class", "不明")
         print("📥 受け取った推論結果:", data)
 
     # --- 同じ状態ならスキップ ---
     if room_status == last_room_status:
         status = "skipped"
-        print(f"⏩ 同じ状態のため処理スキップ → last_room_status: {last_room_status}, room_status: {room_status}, timestamp: {now}")
+        print(f"⏩ 同じ状態のため Slack 更新スキップ → {room_status}")
     else:
-        # Slack送信前ログ
-        print(f"🔔 Slack送信前 → packet_status: {packet_status}, room_status: {room_status}, timestamp: {now}")
+        # Slack送信・更新前ログ
+        print(f"🔔 Slack更新前 → packet_status: {packet_status}, room_status: {room_status}, timestamp: {now}")
 
-        # Slack通知
+        # Slack通知または更新
+        message_text = f"【{now}】\n現在の状態：{room_status}"
+
         try:
-            message = f"【{now}】\n {room_status}"
-            slack_client.chat_postMessage(
-                channel="#prj_game_shiteruzou",
-                text=message
-            )
+            if slack_message_ts is None:
+                # 初回のみ投稿
+                res = slack_client.chat_postMessage(
+                    channel="#prj_game_shiteruzou",
+                    text=message_text
+                )
+                slack_message_ts = res["ts"]  # ← tsを保存
+                print(f"🆕 Slackメッセージ投稿完了 (ts={slack_message_ts})")
+            else:
+                # 2回目以降はメッセージを更新
+                slack_client.chat_update(
+                    channel="#prj_game_shiteruzou",
+                    ts=slack_message_ts,
+                    text=message_text
+                )
+                print("♻️ Slackメッセージを更新しました")
+
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
 
@@ -116,7 +131,6 @@ async def slack_events(request: Request):
 
     event = data.get("event", {})
     print("Event details:", event)
-
     return JSONResponse(content={"status": "ok"})
 
 
