@@ -4,7 +4,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # 必要なライブラリをインストール
-RUN pip install --no-cache-dir fastapi uvicorn slack_bolt python-dotenv mysql-connector-python
+RUN pip install --no-cache-dir fastapi uvicorn slack_bolt slack_sdk python-dotenv mysql-connector-python
 
 # アプリコードをコピー
 COPY main.py /app/main.py
