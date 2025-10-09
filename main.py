@@ -16,8 +16,8 @@ slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
 
 # --- 状態変数 ---
-last_game_name = None
-room_status = "何もしていない"
+last_room_status = "不明"
+room_status = "不明"
 packet_status = False
 
 # --- MySQL接続設定 ---
@@ -29,33 +29,32 @@ db_config = {
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
 
-def save_to_db(game_name: str, timestamp: str):
+def save_to_db(room_status: str, timestamp: str):
     """推論結果を MySQL に保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO results (game_name, timestamp)
+            INSERT INTO results (room_status, timestamp)
             VALUES (%s, %s)
-        """, (game_name, timestamp))
+        """, (room_status, timestamp))
         conn.commit()
-        print(f"✅ DB保存完了: {game_name} ({timestamp})")
+        print(f"✅ DB保存完了: {room_status} ({timestamp})")
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
     finally:
-        try:
+        if 'cursor' in locals() and cursor:
             cursor.close()
+        if 'conn' in locals() and conn:
             conn.close()
-        except:
-            pass
 
 @app.post("/result")
 async def receive_result(request: Request):
-    global last_game_name, room_status, packet_status
+    global last_room_status, room_status, packet_status
     data = await request.json()
     print("📥 受け取った推論結果:", data)
 
-    game_name = data.get("class", "不明")
+    room_status = data.get("class", "不明")
 
     # timestamp が指定されていなければ現在時刻を補完
     raw_now = data.get("timestamp")
@@ -68,30 +67,33 @@ async def receive_result(request: Request):
             now = str(raw_now)
 
     if packet_status is False:
-        game_name = "何もしていない"
-        print(f"⚠️ packet_status が False → game_name を「何もしていない」に更新")
-    # --- 前回と同じ game_name の場合のみ処理をスキップ ---
-    if game_name == last_game_name:
+        room_status = "何もしていない"
+        print(f"⚠️ packet_status が False → room_status を「何もしていない」に更新")
+
+    # --- 前回と同じ room_status の場合のみ処理をスキップ ---
+    if room_status == last_room_status:
         status = "skipped"
-        print(f"⏩ 同じゲーム名のため処理スキップ → last_game_name: {last_game_name}, game_name: {game_name}, timestamp: {now}")
+        print(f"⏩ 同じ状態のため処理スキップ → last_room_status: {last_room_status}, room_status: {room_status}, timestamp: {now}")
     else:
         # Slack送信前ログ
-        print(f"🔔 Slack送信前 → packet_status: {packet_status}, game_name: {game_name}, timestamp: {now}")
+        print(f"🔔 Slack送信前 → packet_status: {packet_status}, room_status: {room_status}, timestamp: {now}")
 
         # メッセージ作成
-        message = f"【{now}】\n {game_name}"
+        message = f"【{now}】\n {room_status}"
 
         # Slack通知
-        slack_client.chat_postMessage(
-            channel="#prj_game_shiteruzou",
-            text=message
-        )
+        try:
+            slack_client.chat_postMessage(
+                channel="#prj_game_shiteruzou",
+                text=message
+            )
+        except Exception as e:
+            print(f"⚠️ Slack送信エラー: {e}")
 
         # MySQL保存
-        save_to_db(game_name, now)
+        save_to_db(room_status, now)
 
-        last_game_name = game_name
-        room_status = game_name
+        last_room_status = room_status
         status = "notified"
 
     return JSONResponse(content={
@@ -115,6 +117,7 @@ async def slack_events(request: Request):
     print("Event details:", event)
 
     return JSONResponse(content={"status": "ok"})
+
 
 @app.post("/packet")
 async def receive_packet(request: Request):
