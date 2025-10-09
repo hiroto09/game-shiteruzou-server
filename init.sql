@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS results (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    game_name VARCHAR(255) NOT NULL,
-    timestamp DATETIME NOT NULL,
+    room_status VARCHAR(255) NOT NULL,
+    timestamp DATETIME NOT NULL
 );
