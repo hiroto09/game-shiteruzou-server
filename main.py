@@ -67,14 +67,9 @@ async def receive_result(request: Request):
         except Exception:
             now = str(raw_now)
 
-    message = f"【{now}】\n {game_name}"
-
-    # --- packet_status が False の場合は game_name を「何もしていない」に更新するだけ ---
-    print(f"🔍 ####パケットステータスだよ！！！！！: {packet_status}")
     if packet_status is False:
         game_name = "何もしていない"
         print(f"⚠️ packet_status が False → game_name を「何もしていない」に更新")
-    print(f"🔍 ####パケットステータスだよ！！！！！: {game_name},{last_game_name}")
     # --- 前回と同じ game_name の場合のみ処理をスキップ ---
     if game_name == last_game_name:
         status = "skipped"
@@ -82,6 +77,9 @@ async def receive_result(request: Request):
     else:
         # Slack送信前ログ
         print(f"🔔 Slack送信前 → packet_status: {packet_status}, game_name: {game_name}, timestamp: {now}")
+
+        # メッセージ作成
+        message = f"【{now}】\n {game_name}"
 
         # Slack通知
         slack_client.chat_postMessage(
