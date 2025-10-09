@@ -89,7 +89,7 @@ async def receive_result(request: Request):
             if slack_message_ts is None:
                 # 初回のみ投稿
                 res = slack_client.chat_postMessage(
-                    channel="#prj_game_shiteruzo",
+                    channel="prj_game_shiteruzo",
                     text=message_text
                 )
                 slack_message_ts = res["ts"]  # ← tsを保存
@@ -97,7 +97,7 @@ async def receive_result(request: Request):
             else:
                 # 2回目以降はメッセージを更新
                 slack_client.chat_update(
-                    channel="#prj_game_shiteruzo",
+                    channel="prj_game_shiteruzo",
                     ts=slack_message_ts,
                     text=message_text
                 )
