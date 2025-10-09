@@ -85,7 +85,7 @@ async def receive_result(request: Request):
         try:
             message = f"【{now}】\n {room_status}"
             slack_client.chat_postMessage(
-                channel="#prj_game_shiteruzou",
+                channel="#prj_game_shiteruzo",
                 text=message
             )
         except Exception as e:
