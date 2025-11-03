@@ -66,8 +66,8 @@ async def receive_result(request: Request):
 
     # --- packet_status に応じた処理 ---
     if packet_status is False:
-        room_status = "何もしていない"
-        print(f"⚠️ packet_status=False → 推論結果を無視して room_status を「何もしていない」に設定")
+        room_status = "何もしてない"
+        print(f"⚠️ packet_status=False → 推論結果を無視して room_status を「何もしてない」に設定")
     else:
         # packet_status=True の場合のみ受信データを反映
         room_status = data.get("class", "不明")
