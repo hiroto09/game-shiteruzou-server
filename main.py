@@ -135,3 +135,56 @@ async def receive_result(request: Request):
         "packet_status": packet_status,
         "formatted_time": now
     })
+
+@app.post("/packet")
+async def receive_packet(request: Request):
+    """
+    通信状態（packet_status）の更新API。
+    例: {"status": true} または {"status": false}
+    """
+    global packet_status
+    data = await request.json()
+
+    new_status = data.get("status")
+    if new_status is None:
+        return JSONResponse(content={"error": "statusが指定されていません"}, status_code=400)
+
+    packet_status = bool(new_status)
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    print(f"📡 パケット状態更新: {packet_status} at {now}")
+
+    try:
+        slack_client.chat_postMessage(
+            channel="#prj_game_shiteruzo",
+            text=f"【{now}】パケット状態: {'有効' if packet_status else '切断'}"
+        )
+    except Exception as e:
+        print(f"⚠️ Slack送信エラー: {e}")
+
+    return JSONResponse(content={
+        "status": "ok",
+        "packet_status": packet_status,
+        "timestamp": now
+    })
+
+
+@app.post("/event")
+async def receive_event(request: Request):
+    """
+    任意イベントをSlackに送信。
+    例: {"message": "システム再起動しました"}
+    """
+    data = await request.json()
+    message = data.get("message", "（メッセージなし）")
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
+    try:
+        slack_client.chat_postMessage(
+            channel="#prj_game_shiteruzo",
+            text=f"【イベント】{now}\n{message}"
+        )
+        print(f"📝 イベント送信: {message}")
+    except Exception as e:
+        print(f"⚠️ Slack送信エラー: {e}")
+
+    return JSONResponse(content={"status": "sent", "message": message, "timestamp": now})
