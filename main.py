@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, Form, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -16,6 +17,13 @@ CLASS_MAP = {
 
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
+
+# 画像保存用ディレクトリ
+IMAGE_DIR = "images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+# 静的配信設定
+app.mount("/images", StaticFiles(directory=IMAGE_DIR), name="images")
 
 # 状態管理
 last_room_status = "不明"
@@ -34,18 +42,21 @@ db_config = {
 
 # =========================================
 # DB保存関数
-def save_new_state(room_status_id: int, start_time: str, image_bytes: bytes = None):
+def save_new_state(room_status_id: int, start_time: str):
+    """新しい状態をresultsに保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO results (room_status_id, start_time, image_blob)
-            VALUES (%s, %s, %s)
-        """, (room_status_id, start_time, image_bytes))
+            INSERT INTO results (room_status_id, start_time)
+            VALUES (%s, %s)
+        """, (room_status_id, start_time))
         conn.commit()
-        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time}) 画像: {'あり' if image_bytes else 'なし'}")
+        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time})")
+        return cursor.lastrowid
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
+        return None
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -53,6 +64,7 @@ def save_new_state(room_status_id: int, start_time: str, image_bytes: bytes = No
             conn.close()
 
 def close_last_state(end_time: str):
+    """最後の状態にend_timeを記録"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -67,6 +79,25 @@ def close_last_state(end_time: str):
         print(f"🕒 前の状態終了を記録: {end_time}")
     except Exception as e:
         print("⚠️ 終了時刻更新エラー:", e)
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+def save_image_record(result_id: int, image_url: str, saved_time: str):
+    """imagesテーブルに画像URLと保存時刻を登録"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO images (result_id, image_url, saved_time)
+            VALUES (%s, %s, %s)
+        """, (result_id, image_url, saved_time))
+        conn.commit()
+        print(f"🖼️ 画像保存記録: {image_url} ({saved_time})")
+    except Exception as e:
+        print("⚠️ 画像記録エラー:", e)
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -90,12 +121,6 @@ async def receive_result(
     except Exception:
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
-    # 画像読み込み
-    image_bytes = None
-    if image:
-        image_bytes = await image.read()
-        print(f"🖼️ 画像受信: {image.filename} ({len(image_bytes)} bytes)")
-
     # 状態判定
     if not packet_status:
         room_status_id = 0
@@ -106,36 +131,56 @@ async def receive_result(
         room_status = CLASS_MAP.get(room_status_id, "不明")
         print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
+    result_id = None
+
     # 状態変化チェック & DB保存
     if room_status != last_room_status:
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
-        save_new_state(room_status_id, now, image_bytes)
+        result_id = save_new_state(room_status_id, now)
         current_start_time = now
         last_room_status = room_status
-        status = "saved"
 
         # Slack通知
         try:
             message = f"【{now}】\n{room_status}"
-            slack_client.chat_postMessage(
-                channel="#prj_game_shiteruzo",
-                text=message
-            )
+            slack_client.chat_postMessage(channel="#prj_game_shiteruzo", text=message)
             print(f"🔔 Slack送信: {message}")
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
 
+        status = "saved"
     else:
+        # 状態変化なしでも最後のresult_idを取得
+        try:
+            conn = mysql.connector.connect(**db_config)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM results ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                result_id = row[0]
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
         status = "skipped"
-        print(f"⏩ 同じ状態スキップ: {room_status}")
 
-    return JSONResponse(content={
+    # 画像保存処理（状態変化に関係なく毎回）
+    if image:
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{image.filename}"
+        save_path = os.path.join(IMAGE_DIR, filename)
+        with open(save_path, "wb") as f:
+            f.write(await image.read())
+
+        image_url = f"/images/{filename}"
+        save_image_record(result_id, image_url, now)
+
+    return JSONResponse({
         "status": status,
-        "room_status_id": room_status_id,
         "room_status_name": room_status,
         "packet_status": packet_status,
-        "image_present": bool(image_bytes),
+        "image_saved": bool(image),
         "formatted_time": now
     })
 
@@ -163,26 +208,3 @@ async def slack_events(request: Request):
     if data.get("type") == "url_verification":
         return JSONResponse({"challenge": data["challenge"]})
     return JSONResponse({"status": "ok"})
-
-# =========================================
-# /image エンドポイント（ブラウザで直接画像表示）
-@app.get("/image/{record_id}")
-async def get_image(record_id: int):
-    """DBに保存された画像をブラウザに直接表示"""
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("SELECT image_blob FROM results WHERE id=%s", (record_id,))
-        row = cursor.fetchone()
-        if not row or row[0] is None:
-            raise HTTPException(status_code=404, detail="画像なし")
-        image_bytes = row[0]
-        return Response(content=image_bytes, media_type="image/png")
-    except Exception as e:
-        print("⚠️ 画像取得エラー:", e)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
