@@ -161,23 +161,15 @@ async def receive_packet(request: Request):
     })
 
 
-@app.post("/event")
-async def receive_event(request: Request):
-    """
-    任意イベントをSlackに送信。
-    例: {"message": "システム再起動しました"}
-    """
-    data = await request.json()
-    message = data.get("message", "（メッセージなし）")
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+@app.post("/events") 
+async def slack_events(request: Request): 
+    
+    data = await request.json() 
+    print("📥 Slack Event Received:", data) 
 
-    try:
-        slack_client.chat_postMessage(
-            channel="#prj_game_shiteruzo",
-            text=f"【イベント】{now}\n{message}"
-        )
-        print(f"📝 イベント送信: {message}")
-    except Exception as e:
-        print(f"⚠️ Slack送信エラー: {e}")
-
-    return JSONResponse(content={"status": "sent", "message": message, "timestamp": now})
+    if data.get("type") == "url_verification": 
+        return JSONResponse(content={"challenge": data["challenge"]}) 
+    
+    event = data.get("event", {}) 
+    print("Event details:", event) 
+    return JSONResponse(content={"status": "ok"})
