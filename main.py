@@ -1,12 +1,10 @@
-from fastapi import FastAPI, Request, Form, File, UploadFile
-from fastapi.responses import JSONResponse
-from io import BytesIO
-import base64
+from fastapi import FastAPI, Request, Form, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse, Response
+from datetime import datetime
 import os
 from dotenv import load_dotenv
-from slack_sdk import WebClient
-from datetime import datetime
 import mysql.connector
+from slack_sdk import WebClient
 
 load_dotenv(verbose=True)
 
@@ -19,11 +17,13 @@ CLASS_MAP = {
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
 
+# 状態管理
 last_room_status = "不明"
 room_status = "不明"
 packet_status = False
 current_start_time = None
 
+# DB接続情報
 db_config = {
     "host": os.environ.get("DB_HOST", "db"),
     "user": os.environ.get("DB_USER", "root"),
@@ -165,28 +165,22 @@ async def slack_events(request: Request):
     return JSONResponse({"status": "ok"})
 
 # =========================================
-# /image エンドポイント（画像と保存時刻を返す）
+# /image エンドポイント（ブラウザで直接画像表示）
 @app.get("/image/{record_id}")
 async def get_image(record_id: int):
-    """DBに保存された画像と保存時刻をJSONで返す"""
+    """DBに保存された画像をブラウザに直接表示"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
-        cursor.execute("SELECT image_blob, start_time FROM results WHERE id=%s", (record_id,))
+        cursor.execute("SELECT image_blob FROM results WHERE id=%s", (record_id,))
         row = cursor.fetchone()
-        if row and row[0]:
-            image_bytes, start_time = row
-            image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-            return JSONResponse({
-                "record_id": record_id,
-                "image_base64": image_base64,
-                "saved_time": start_time.strftime("%Y/%m/%d %H:%M:%S")
-            })
-        else:
-            return JSONResponse({"error": "画像なし"}, status_code=404)
+        if not row or row[0] is None:
+            raise HTTPException(status_code=404, detail="画像なし")
+        image_bytes = row[0]
+        return Response(content=image_bytes, media_type="image/png")
     except Exception as e:
         print("⚠️ 画像取得エラー:", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if 'cursor' in locals():
             cursor.close()
