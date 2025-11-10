@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Request, Form, File, UploadFile
 from fastapi.responses import JSONResponse
+from io import BytesIO
+import base64
 import os
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from datetime import datetime
 import mysql.connector
-from io import BytesIO
 
 load_dotenv(verbose=True)
 
@@ -31,9 +32,9 @@ db_config = {
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
 
-# --- DB保存用関数 ---
+# =========================================
+# DB保存関数
 def save_new_state(room_status_id: int, start_time: str, image_bytes: bytes = None):
-    """新しい状態をDBに保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -52,7 +53,6 @@ def save_new_state(room_status_id: int, start_time: str, image_bytes: bytes = No
             conn.close()
 
 def close_last_state(end_time: str):
-    """前の状態の終了時刻を更新"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -73,8 +73,8 @@ def close_last_state(end_time: str):
         if 'conn' in locals():
             conn.close()
 
-# --- /result エンドポイント ---
-# --- /result エンドポイント ---
+# =========================================
+# /result エンドポイント
 @app.post("/result")
 async def receive_result(
     class_id: int = Form(...),
@@ -84,19 +84,19 @@ async def receive_result(
 ):
     global last_room_status, room_status, packet_status, current_start_time
 
-    # --- 時刻整形 ---
+    # 時刻整形
     try:
         now = datetime.fromisoformat(timestamp).strftime("%Y/%m/%d %H:%M:%S")
     except Exception:
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
-    # --- 画像読み込み ---
+    # 画像読み込み
     image_bytes = None
     if image:
         image_bytes = await image.read()
         print(f"🖼️ 画像受信: {image.filename} ({len(image_bytes)} bytes)")
 
-    # --- 状態判定 ---
+    # 状態判定
     if not packet_status:
         room_status_id = 0
         room_status = CLASS_MAP[room_status_id]
@@ -106,7 +106,7 @@ async def receive_result(
         room_status = CLASS_MAP.get(room_status_id, "不明")
         print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
-    # --- 状態変化チェック ---
+    # 状態変化チェック & DB保存
     if room_status != last_room_status:
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
@@ -114,6 +114,18 @@ async def receive_result(
         current_start_time = now
         last_room_status = room_status
         status = "saved"
+
+        # Slack通知
+        try:
+            message = f"【{now}】\n{room_status}"
+            slack_client.chat_postMessage(
+                channel="#prj_game_shiteruzo",
+                text=message
+            )
+            print(f"🔔 Slack送信: {message}")
+        except Exception as e:
+            print(f"⚠️ Slack送信エラー: {e}")
+
     else:
         status = "skipped"
         print(f"⏩ 同じ状態スキップ: {room_status}")
@@ -127,8 +139,8 @@ async def receive_result(
         "formatted_time": now
     })
 
-
-# --- /packet エンドポイント ---
+# =========================================
+# /packet エンドポイント
 @app.post("/packet")
 async def receive_packet(request: Request):
     global packet_status
@@ -141,12 +153,42 @@ async def receive_packet(request: Request):
     else:
         result = "invalid"
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-    return JSONResponse(content={"result": result, "packet_status": packet_status, "updated_at": now})
+    return JSONResponse({"result": result, "packet_status": packet_status, "updated_at": now})
 
-# --- /events エンドポイント ---
+# =========================================
+# /events エンドポイント
 @app.post("/events")
 async def slack_events(request: Request):
     data = await request.json()
     if data.get("type") == "url_verification":
-        return JSONResponse(content={"challenge": data["challenge"]})
-    return JSONResponse(content={"status": "ok"})
+        return JSONResponse({"challenge": data["challenge"]})
+    return JSONResponse({"status": "ok"})
+
+# =========================================
+# /image エンドポイント（画像と保存時刻を返す）
+@app.get("/image/{record_id}")
+async def get_image(record_id: int):
+    """DBに保存された画像と保存時刻をJSONで返す"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT image_blob, start_time FROM results WHERE id=%s", (record_id,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            image_bytes, start_time = row
+            image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+            return JSONResponse({
+                "record_id": record_id,
+                "image_base64": image_base64,
+                "saved_time": start_time.strftime("%Y/%m/%d %H:%M:%S")
+            })
+        else:
+            return JSONResponse({"error": "画像なし"}, status_code=404)
+    except Exception as e:
+        print("⚠️ 画像取得エラー:", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
