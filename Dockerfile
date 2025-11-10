@@ -1,13 +1,16 @@
 FROM python:3.10-slim
 
-# 作業ディレクトリ
 WORKDIR /app
 
-# 必要なライブラリをインストール
-RUN pip install --no-cache-dir fastapi uvicorn slack_bolt slack_sdk python-dotenv mysql-connector-python
+# 依存関係コピー & インストール
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
-# アプリコードをコピー
-COPY main.py /app/main.py
+# アプリコードコピー
+COPY main.py /app/
 
-# uvicorn で起動
+# FastAPI ポート
+EXPOSE 8000
+
+# 起動
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
