@@ -74,6 +74,7 @@ def close_last_state(end_time: str):
             conn.close()
 
 # --- /result エンドポイント ---
+# --- /result エンドポイント ---
 @app.post("/result")
 async def receive_result(
     class_id: int = Form(...),
@@ -106,38 +107,16 @@ async def receive_result(
         print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
     # --- 状態変化チェック ---
-    if room_status == last_room_status:
-        status = "skipped"
-        print(f"⏩ 同じ状態スキップ: {room_status}")
-    else:
+    if room_status != last_room_status:
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
-
         save_new_state(room_status_id, now, image_bytes)
         current_start_time = now
-
-        # --- Slack送信 ---
-        try:
-            message = f"【{now}】\n{room_status}"
-            if image_bytes:
-                slack_client.files_upload(
-                    channels="#prj_game_shiteruzo",
-                    file=BytesIO(image_bytes),
-                    filename=image.filename,
-                    initial_comment=message
-                )
-                print(f"🔔 Slack送信（画像付き）: {message}")
-            else:
-                slack_client.chat_postMessage(
-                    channel="#prj_game_shiteruzo",
-                    text=message
-                )
-                print(f"🔔 Slack送信: {message}")
-        except Exception as e:
-            print(f"⚠️ Slack送信エラー: {e}")
-
         last_room_status = room_status
-        status = "notified"
+        status = "saved"
+    else:
+        status = "skipped"
+        print(f"⏩ 同じ状態スキップ: {room_status}")
 
     return JSONResponse(content={
         "status": status,
@@ -147,6 +126,7 @@ async def receive_result(
         "image_present": bool(image_bytes),
         "formatted_time": now
     })
+
 
 # --- /packet エンドポイント ---
 @app.post("/packet")
