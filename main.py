@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form, File, UploadFile
 from fastapi.responses import JSONResponse
 import os
 from dotenv import load_dotenv
@@ -20,8 +20,6 @@ app = FastAPI()
 last_room_status = "不明"
 room_status = "不明"
 packet_status = False
-
-# --- 状態の開始時刻を記録 ---
 current_start_time = None
 
 db_config = {
@@ -32,24 +30,24 @@ db_config = {
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
 
-
-def save_new_state(room_status_id: int, start_time: str):
-    """新しい状態の開始をDBに保存"""
+# --- DB保存用関数修正版 ---
+def save_new_state(room_status_id: int, start_time: str, image_path: str = None):
+    """新しい状態をDBに保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO results (room_status_id, start_time)
-            VALUES (%s, %s)
-        """, (room_status_id, start_time))
+            INSERT INTO results (room_status_id, start_time, image_path)
+            VALUES (%s, %s, %s)
+        """, (room_status_id, start_time, image_path))
         conn.commit()
-        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time})")
+        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time}) 画像: {image_path}")
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
     finally:
-        if 'cursor' in locals() and cursor:
+        if 'cursor' in locals():
             cursor.close()
-        if 'conn' in locals() and conn:
+        if 'conn' in locals():
             conn.close()
 
 
@@ -70,50 +68,60 @@ def close_last_state(end_time: str):
     except Exception as e:
         print("⚠️ 終了時刻更新エラー:", e)
     finally:
-        if 'cursor' in locals() and cursor:
+        if 'cursor' in locals():
             cursor.close()
-        if 'conn' in locals() and conn:
+        if 'conn' in locals():
             conn.close()
 
 
+# --- 修正版 /result エンドポイント ---
 @app.post("/result")
-async def receive_result(request: Request):
+async def receive_result(
+    class_id: int = Form(...),
+    confidence: float = Form(...),
+    timestamp: str = Form(...),
+    image: UploadFile = File(None)
+):
     global last_room_status, room_status, packet_status, current_start_time
-    data = await request.json()
 
-    raw_now = data.get("timestamp")
-    if not raw_now or raw_now == "不明":
+    # --- 時刻整形 ---
+    try:
+        now = datetime.fromisoformat(timestamp).strftime("%Y/%m/%d %H:%M:%S")
+    except Exception:
         now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-    else:
-        try:
-            now = datetime.fromisoformat(raw_now).strftime("%Y/%m/%d %H:%M:%S")
-        except Exception:
-            now = str(raw_now)
 
-    # --- packet_statusがFalseなら強制的に「何もしてない」 ---
+    # --- 画像保存 ---
+    image_path = None
+    if image:
+        os.makedirs("received_images", exist_ok=True)
+        filename = f"{now.replace(':', '-')}_{image.filename}"
+        save_path = os.path.join("received_images", filename)
+        with open(save_path, "wb") as f:
+            f.write(await image.read())
+        image_path = save_path
+        print(f"🖼️ 画像保存: {save_path}")
+
+    # --- 状態判定 ---
     if not packet_status:
         room_status_id = 0
         room_status = CLASS_MAP[room_status_id]
-        print(f"⚠️ packet_status=False → 「何もしてない」に設定")
+        print("⚠️ packet_status=False → 何もしてない")
     else:
-        room_status_id = int(data.get("class_id", 0))
+        room_status_id = class_id
         room_status = CLASS_MAP.get(room_status_id, "不明")
-        print("📥 推論結果受信:", data)
+        print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
-    # --- 同一状態はスキップ ---
+    # --- 状態変化チェック ---
     if room_status == last_room_status:
         status = "skipped"
         print(f"⏩ 同じ状態スキップ: {room_status}")
     else:
-        # --- 前の状態を終了 ---
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
 
-        # --- 新しい状態の開始 ---
-        save_new_state(room_status_id, now)
+        save_new_state(room_status_id, now, image_path)
         current_start_time = now
 
-        # --- Slack通知 ---
         try:
             message = f"【{now}】\n{room_status}"
             slack_client.chat_postMessage(
@@ -129,12 +137,13 @@ async def receive_result(request: Request):
 
     return JSONResponse(content={
         "status": status,
-        "received": data,
         "room_status_id": room_status_id,
         "room_status_name": room_status,
         "packet_status": packet_status,
+        "image_path": image_path,
         "formatted_time": now
     })
+
 
 @app.post("/packet") 
 async def receive_packet(request: Request): 
@@ -155,11 +164,11 @@ async def receive_packet(request: Request):
 async def slack_events(request: Request): 
 
     data = await request.json() 
-    print("📥 Slack Event Received:", data) 
+    # print("📥 Slack Event Received:", data) 
 
     if data.get("type") == "url_verification": 
         return JSONResponse(content={"challenge": data["challenge"]}) 
     
     event = data.get("event", {}) 
-    print("Event details:", event) 
+    # print("Event details:", event) 
     return JSONResponse(content={"status": "ok"})
