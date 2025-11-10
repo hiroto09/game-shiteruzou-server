@@ -1,5 +1,8 @@
+DROP TABLE IF EXISTS results;
+
 CREATE TABLE IF NOT EXISTS results (
     id INT AUTO_INCREMENT PRIMARY KEY,
     room_status VARCHAR(255) NOT NULL,
-    timestamp DATETIME NOT NULL
+    start_time DATETIME NOT NULL,
+    end_time DATETIME DEFAULT NULL
 );

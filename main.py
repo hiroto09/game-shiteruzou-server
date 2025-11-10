@@ -6,28 +6,24 @@ from slack_sdk import WebClient
 from datetime import datetime
 import mysql.connector
 
-# --- 環境変数読み込み ---
 load_dotenv(verbose=True)
 
-# --- クラスIDと日本語名の対応 ---
 CLASS_MAP = {
     0: "何もしてない",
     1: "人生ゲーム",
     2: "スマブラ"
 }
 
-# --- Slackクライアント ---
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
-
-# --- FastAPIアプリ作成 ---
 app = FastAPI()
 
-# --- 状態変数 ---
 last_room_status = "不明"
 room_status = "不明"
 packet_status = False
 
-# --- MySQL接続設定 ---
+# --- 状態の開始時刻を記録 ---
+current_start_time = None
+
 db_config = {
     "host": os.environ.get("DB_HOST", "db"),
     "user": os.environ.get("DB_USER", "root"),
@@ -36,18 +32,18 @@ db_config = {
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
 
-# --- DB保存関数 ---
-def save_to_db(room_status_id: int, timestamp: str):
-    """推論結果を MySQL に保存（IDで）"""
+
+def save_new_state(room_status_id: int, start_time: str):
+    """新しい状態の開始をDBに保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO results (room_status_id, timestamp)
+            INSERT INTO results (room_status_id, start_time)
             VALUES (%s, %s)
-        """, (room_status_id, timestamp))
+        """, (room_status_id, start_time))
         conn.commit()
-        print(f"✅ DB保存完了: ID={room_status_id} ({timestamp})")
+        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time})")
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
     finally:
@@ -57,10 +53,32 @@ def save_to_db(room_status_id: int, timestamp: str):
             conn.close()
 
 
-# --- /result エンドポイント ---
+def close_last_state(end_time: str):
+    """前の状態の終了時刻を更新"""
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE results
+            SET end_time = %s
+            WHERE end_time IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """, (end_time,))
+        conn.commit()
+        print(f"🕒 前の状態終了を記録: {end_time}")
+    except Exception as e:
+        print("⚠️ 終了時刻更新エラー:", e)
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+
 @app.post("/result")
 async def receive_result(request: Request):
-    global last_room_status, room_status, packet_status
+    global last_room_status, room_status, packet_status, current_start_time
     data = await request.json()
 
     raw_now = data.get("timestamp")
@@ -87,6 +105,14 @@ async def receive_result(request: Request):
         status = "skipped"
         print(f"⏩ 同じ状態スキップ: {room_status}")
     else:
+        # --- 前の状態を終了 ---
+        if last_room_status != "不明" and current_start_time:
+            close_last_state(now)
+
+        # --- 新しい状態の開始 ---
+        save_new_state(room_status_id, now)
+        current_start_time = now
+
         # --- Slack通知 ---
         try:
             message = f"【{now}】\n{room_status}"
@@ -97,9 +123,6 @@ async def receive_result(request: Request):
             print(f"🔔 Slack送信: {message}")
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
-
-        # --- DB保存 ---
-        save_to_db(room_status_id, now)
 
         last_room_status = room_status
         status = "notified"
@@ -112,41 +135,3 @@ async def receive_result(request: Request):
         "packet_status": packet_status,
         "formatted_time": now
     })
-
-
-# --- /packet エンドポイント ---
-@app.post("/packet")
-async def receive_packet(request: Request):
-    global packet_status
-    data = await request.json()
-    print("📥 Packet Received:", data)
-
-    new_status = data.get("status")
-    if isinstance(new_status, bool):
-        packet_status = new_status
-        result = "updated"
-    else:
-        result = "invalid"
-
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-    return JSONResponse(content={
-        "result": result,
-        "packet_status": packet_status,
-        "updated_at": now
-    })
-
-
-# --- /events (Slack Event受信用) ---
-@app.post("/events")
-async def slack_events(request: Request):
-    data = await request.json()
-    print("📥 Slack Event Received:", data)
-
-    if data.get("type") == "url_verification":
-        return JSONResponse(content={"challenge": data["challenge"]})
-
-    event = data.get("event", {})
-    print("Event details:", event)
-
-    return JSONResponse(content={"status": "ok"})
