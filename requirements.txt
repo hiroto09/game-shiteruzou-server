@@ -3,5 +3,4 @@ uvicorn[standard]==0.23.2
 slack_bolt==1.25.0
 slack_sdk==3.26.2
 python-dotenv==1.0.1
-mysql-connector-python==8.1.1
-
+mysql-connector-python==8.0.33
