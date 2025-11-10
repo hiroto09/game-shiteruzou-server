@@ -3,8 +3,9 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # 依存関係コピー & インストール
-COPY requirements.txt /app/
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 
 # アプリコードコピー
 COPY main.py /app/
