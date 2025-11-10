@@ -136,34 +136,24 @@ async def receive_result(request: Request):
         "formatted_time": now
     })
 
-@app.post("/packet")
-async def receive_packet(request: Request):
-    """
-    通信状態（packet_status）の更新API。
-    例: {"status": true} または {"status": false}
-    """
-    global packet_status
-    data = await request.json()
-
-    new_status = data.get("status")
-    if new_status is None:
-        return JSONResponse(content={"error": "statusが指定されていません"}, status_code=400)
-
-    packet_status = bool(new_status)
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-    print(f"📡 パケット状態更新: {packet_status} at {now}")
-
-
-    return JSONResponse(content={
-        "status": "ok",
-        "packet_status": packet_status,
-        "timestamp": now
-    })
+@app.post("/packet") 
+async def receive_packet(request: Request): 
+    global packet_status 
+    data = await request.json() 
+    print("📥 Packet Received:", data) 
+    new_status = data.get("status") 
+    if isinstance(new_status, bool): 
+        packet_status = new_status 
+        result = "updated" 
+    else: 
+        result = "invalid" 
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S") 
+    return JSONResponse(content={ "result": result, "packet_status": packet_status, "updated_at": now })
 
 
 @app.post("/events") 
 async def slack_events(request: Request): 
-    
+
     data = await request.json() 
     print("📥 Slack Event Received:", data) 
 
