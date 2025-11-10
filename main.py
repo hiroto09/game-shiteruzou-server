@@ -153,13 +153,6 @@ async def receive_packet(request: Request):
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     print(f"📡 パケット状態更新: {packet_status} at {now}")
 
-    try:
-        slack_client.chat_postMessage(
-            channel="#prj_game_shiteruzo",
-            text=f"【{now}】パケット状態: {'有効' if packet_status else '切断'}"
-        )
-    except Exception as e:
-        print(f"⚠️ Slack送信エラー: {e}")
 
     return JSONResponse(content={
         "status": "ok",
