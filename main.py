@@ -12,7 +12,8 @@ load_dotenv(verbose=True)
 CLASS_MAP = {
     0: "何もしてない",
     1: "人生ゲーム",
-    2: "スマブラ"
+    2: "スマブラ",
+    3: "マリオカート"
 }
 
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
