@@ -6,11 +6,9 @@ CREATE TABLE results (
     end_time DATETIME DEFAULT NULL
 );
 
--- 新しい画像テーブル
 CREATE TABLE images (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    result_id INT,
     image_url VARCHAR(255) NOT NULL,
-    saved_time DATETIME NOT NULL,
-    FOREIGN KEY (result_id) REFERENCES results(id) ON DELETE SET NULL
+    saved_time DATETIME NOT NULL
 );
+
