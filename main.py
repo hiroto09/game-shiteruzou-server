@@ -85,7 +85,7 @@ def close_last_state(end_time: str):
         if 'conn' in locals():
             conn.close()
 
-def save_image_record(result_id: int, image_url: str, saved_time: str):
+def save_image_record(image_url: str, saved_time: str):
     """imagesテーブルに画像URLと保存時刻を登録"""
     try:
         conn = mysql.connector.connect(**db_config)
@@ -93,7 +93,7 @@ def save_image_record(result_id: int, image_url: str, saved_time: str):
         cursor.execute("""
             INSERT INTO images (result_id, image_url, saved_time)
             VALUES (%s, %s, %s)
-        """, (result_id, image_url, saved_time))
+        """, (image_url, saved_time))
         conn.commit()
         print(f"🖼️ 画像保存記録: {image_url} ({saved_time})")
     except Exception as e:
@@ -174,7 +174,7 @@ async def receive_result(
             f.write(await image.read())
 
         image_url = f"/images/{filename}"
-        save_image_record(result_id, image_url, now)
+        save_image_record(image_url, now)
 
     return JSONResponse({
         "status": status,
