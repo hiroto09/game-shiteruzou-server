@@ -92,8 +92,8 @@ def save_image_record(image_url: str, saved_time: str):
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO images (result_id, image_url, saved_time)
-            VALUES (%s, %s, %s)
+            INSERT INTO images (image_url, saved_time)
+            VALUES (%s, %s)
         """, (image_url, saved_time))
         conn.commit()
         print(f"🖼️ 画像保存記録: {image_url} ({saved_time})")
@@ -104,6 +104,7 @@ def save_image_record(image_url: str, saved_time: str):
             cursor.close()
         if 'conn' in locals():
             conn.close()
+
 
 # =========================================
 # /result エンドポイント
