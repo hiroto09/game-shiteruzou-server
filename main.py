@@ -145,8 +145,15 @@ async def receive_result(
 
         # Slack通知
         try:
-            message = f"【{now}】\n{room_status}"
-            slack_client.chat_postMessage(channel="#prj_game_shiteruzo", text=message)
+            if room_status == "何もしてない":
+                message = room_status
+            else:
+                message = f"\n{room_status}をプレイ中！一緒に遊ぼう！🎮"
+
+            slack_client.chat_postMessage(
+                channel="#prj_game_shiteruzo",
+                text=message
+            )
             print(f"🔔 Slack送信: {message}")
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
