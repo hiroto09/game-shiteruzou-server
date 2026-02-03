@@ -53,7 +53,6 @@ def save_new_state(room_status_id: int, start_time: str):
             VALUES (%s, %s)
         """, (room_status_id, start_time))
         conn.commit()
-        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time})")
         return cursor.lastrowid
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
@@ -77,7 +76,6 @@ def close_last_state(end_time: str):
             LIMIT 1
         """, (end_time,))
         conn.commit()
-        print(f"🕒 前の状態終了を記録: {end_time}")
     except Exception as e:
         print("⚠️ 終了時刻更新エラー:", e)
     finally:
@@ -96,7 +94,6 @@ def save_image_record(image_url: str, saved_time: str):
             VALUES (%s, %s)
         """, (image_url, saved_time))
         conn.commit()
-        print(f"🖼️ 画像保存記録: {image_url} ({saved_time})")
     except Exception as e:
         print("⚠️ 画像記録エラー:", e)
     finally:
@@ -131,7 +128,6 @@ async def receive_result(
     else:
         room_status_id = class_id
         room_status = CLASS_MAP.get(room_status_id, "不明")
-        print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
     result_id = None
 
@@ -154,7 +150,6 @@ async def receive_result(
                 channel="#prj_game_shiteruzo",
                 text=message
             )
-            print(f"🔔 Slack送信: {message}")
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
 
@@ -175,23 +170,23 @@ async def receive_result(
                 conn.close()
         status = "skipped"
 
-    # 画像保存処理（状態変化に関係なく毎回）
-    if image:
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{image.filename}"
-        save_path = os.path.join(IMAGE_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(await image.read())
+    # # 画像保存処理（状態変化に関係なく毎回）
+    # if image:
+    #     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{image.filename}"
+    #     save_path = os.path.join(IMAGE_DIR, filename)
+    #     with open(save_path, "wb") as f:
+    #         f.write(await image.read())
 
-        image_url = f"/images/{filename}"
-        save_image_record(image_url, now)
+    #     image_url = f"/images/{filename}"
+    #     save_image_record(image_url, now)
 
-    return JSONResponse({
-        "status": status,
-        "room_status_name": room_status,
-        "packet_status": packet_status,
-        "image_saved": bool(image),
-        "formatted_time": now
-    })
+    # return JSONResponse({
+    #     "status": status,
+    #     "room_status_name": room_status,
+    #     "packet_status": packet_status,
+    #     "image_saved": bool(image),
+    #     "formatted_time": now
+    # })
 
 # =========================================
 # /packet エンドポイント
