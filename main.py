@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from datetime import datetime
 import os
@@ -36,7 +36,6 @@ db_config = {
 # =========================================
 # DB保存関数
 def save_new_state(room_status_id: int, start_time: str):
-    """新しい状態をresultsに保存"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -57,7 +56,6 @@ def save_new_state(room_status_id: int, start_time: str):
             conn.close()
 
 def close_last_state(end_time: str):
-    """最後の状態にend_timeを記録"""
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -79,14 +77,19 @@ def close_last_state(end_time: str):
             conn.close()
 
 # =========================================
-# /result エンドポイント（画像なし）
+# /result エンドポイント（JSON）
 @app.post("/result")
-async def receive_result(
-    class_id: int = Form(...),
-    confidence: float = Form(...),
-    timestamp: str = Form(...)
-):
+async def receive_result(request: Request):
     global last_room_status, room_status, packet_status, current_start_time
+
+    data = await request.json()
+
+    try:
+        class_id = int(data["class_id"])
+        confidence = float(data["confidence"])
+        timestamp = data["timestamp"]
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON format")
 
     # 時刻整形
     try:
@@ -132,20 +135,6 @@ async def receive_result(
 
         status = "saved"
     else:
-        # 状態変化なしでも最後のresult_idを取得
-        try:
-            conn = mysql.connector.connect(**db_config)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM results ORDER BY id DESC LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                result_id = row[0]
-        finally:
-            if 'cursor' in locals():
-                cursor.close()
-            if 'conn' in locals():
-                conn.close()
-
         status = "skipped"
 
     return JSONResponse({
@@ -156,7 +145,7 @@ async def receive_result(
     })
 
 # =========================================
-# /packet エンドポイント
+# /packet エンドポイント（JSON）
 @app.post("/packet")
 async def receive_packet(request: Request):
     global packet_status
