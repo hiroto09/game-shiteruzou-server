@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import mysql.connector
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 # =========================
 # 初期設定
@@ -42,6 +43,13 @@ db_config = {
     "database": os.environ.get("DB_NAME", "game_results"),
     "port": int(os.environ.get("DB_PORT", "3306")),
 }
+
+# =========================
+# ログ用関数
+# =========================
+def log(msg: str):
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    print(f"[{now}] {msg}")
 
 # =========================
 # DB操作
@@ -90,14 +98,17 @@ async def receive_result(request: Request):
 
     # ---- confidence フィルタ ----
     if confidence < CONF_THRESHOLD:
+        log("推定結果を無視（confidence低）")
         return JSONResponse({"status": "ignored", "reason": "low_confidence"})
 
     # ---- packet_status ----
     if not packet_status:
+        log("推定結果を無視（packet_status=False）")
         return JSONResponse({"status": "ignored", "reason": "packet_off"})
 
     # ---- 無視クラス ----
     if class_id == IGNORE_CLASS_ID:
+        log("推定結果を無視（idle_state）")
         return JSONResponse({"status": "ignored", "reason": "idle_state"})
 
     # ---- 時刻整形 ----
@@ -108,26 +119,42 @@ async def receive_result(request: Request):
 
     room_status = CLASS_MAP.get(class_id, "不明")
 
-    # ---- 状態変化なし → 何もしない ----
+    # ---- 状態変化なし ----
     if room_status == last_room_status:
+        log(f"状態変化なし → スキップ ({room_status})")
         return JSONResponse({"status": "skipped", "room_status": room_status})
 
     # ---- 状態変化あり ----
+    log(f"状態変化検知: {last_room_status} → {room_status}")
+
     if last_room_status != "不明" and current_start_time:
         close_last_state(now)
+        log("前状態をクローズ")
 
     save_new_state(class_id, now)
     current_start_time = now
     last_room_status = room_status
+    log("DBに新状態を保存")
 
     # ---- Slack通知 ----
+    message = f"\n🎮 {room_status}をプレイ中！一緒に遊ぼう！"
+
     try:
-        slack_client.chat_postMessage(
+        log("Slack送信開始")
+        response = slack_client.chat_postMessage(
             channel="#prj_game_shiteruzo",
-            text=f"\n🎮 {room_status}をプレイ中！一緒に遊ぼう！"
+            text=message
         )
+
+        if response["ok"]:
+            log("✅ Slack送信成功")
+        else:
+            log(f"❌ Slack送信失敗（ok=False）: {response}")
+
+    except SlackApiError as e:
+        log(f"❌ Slack API エラー: {e.response['error']}")
     except Exception as e:
-        print("⚠️ Slack送信エラー:", e)
+        log(f"❌ Slack送信例外: {e}")
 
     return JSONResponse({
         "status": "saved",
@@ -148,8 +175,10 @@ async def receive_packet(request: Request):
 
     if isinstance(new_status, bool):
         packet_status = new_status
+        log(f"packet_status 更新: {packet_status}")
         result = "updated"
     else:
+        log("packet_status 更新失敗（invalid payload）")
         result = "invalid"
 
     return JSONResponse({
