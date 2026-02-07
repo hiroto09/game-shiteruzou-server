@@ -103,8 +103,8 @@ async def receive_result(request: Request):
 
     # ---- packet_status ----
     if not packet_status:
-        log("推定結果を無視（packet_status=False）")
-        return JSONResponse({"status": "ignored", "reason": "packet_off"})
+        log("packet_status=False → class_id を idle(0) に強制変更")
+        class_id = 0
 
     # ---- 無視クラス ----
     if class_id == IGNORE_CLASS_ID:
