@@ -35,28 +35,34 @@ db_config = {
 
 # =========================================
 # 🔥 Block作成（何もしてないも必ず表示）
-def create_game_blocks(status):
-    if status == "何もしてない":
-        text = "☑ 何もしてない 😴"
-    else:
-        text = f"☑ {status}"
-
+def create_game_blocks(digital, analog):
     blocks = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "🎮 状態リスト"
-            }
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": text
+                "text": "状態リスト"
             }
         }
     ]
+
+    # デジタル
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"🎮 デジタル:{digital}"
+        }
+    })
+
+    # アナログ
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"🎲 アナログ:{analog}"
+        }
+    })
 
     return blocks
 
@@ -72,7 +78,6 @@ def save_new_state(room_status_id: int, start_time: str):
             VALUES (%s, %s)
         """, (room_status_id, start_time))
         conn.commit()
-        print(f"✅ 新しい状態保存: {CLASS_MAP[room_status_id]} ({start_time})")
         return cursor.lastrowid
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
@@ -95,7 +100,6 @@ def close_last_state(end_time: str):
             LIMIT 1
         """, (end_time,))
         conn.commit()
-        print(f"🕒 前の状態終了を記録: {end_time}")
     except Exception as e:
         print("⚠️ 終了時刻更新エラー:", e)
     finally:
@@ -130,11 +134,9 @@ async def receive_result(request: Request):
     if not packet_status:
         room_status_id = 0
         room_status = CLASS_MAP[room_status_id]
-        print("⚠️ packet_status=False → 何もしてない")
     else:
         room_status_id = class_id
         room_status = CLASS_MAP.get(room_status_id, "不明")
-        print("📥 推論結果:", {"class_id": class_id, "confidence": confidence})
 
     result_id = None
 
@@ -152,7 +154,7 @@ async def receive_result(request: Request):
         # 🔥 Slack送信（リスト表示）
         # ===============================
         try:
-            blocks = create_game_blocks(room_status)
+            blocks = create_game_blocks(room_status, "何もしていない")
 
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzo",
@@ -160,7 +162,6 @@ async def receive_result(request: Request):
                 blocks=blocks
             )
 
-            print(f"🔔 Slack送信（リスト表示）: {room_status}")
 
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
@@ -184,7 +185,6 @@ async def receive_packet(request: Request):
     global packet_status
 
     data = await request.json()
-    print("📥 Packet Received:", data)
 
     new_status = data.get("status")
 
