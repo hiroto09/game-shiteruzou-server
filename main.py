@@ -15,12 +15,19 @@ CLASS_MAP = {
     3: "マリオカート"
 }
 
+ANALOG_MAP = {
+    "0": "何もしてない",
+    "0437ac48be2a81": "カタン",
+}
+
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
 
 # 状態管理
 last_room_status = "不明"
-room_status = "不明"
+room_status = "何もしてない"
+last_analog_status = "不明"
+analog_status = "何もしてない"
 packet_status = False
 current_start_time = None
 
@@ -66,6 +73,33 @@ def create_game_blocks(digital, analog):
 
     return blocks
 
+# =========================================
+# slack送信関数
+def post_or_update_slack():
+    global slack_ts
+
+    blocks = create_game_blocks(room_status, analog_status)
+
+    try:
+        if slack_ts is None:
+            # 初回投稿
+            res = slack_client.chat_postMessage(
+                channel=CHANNEL_ID,
+                text="状態リスト",
+                blocks=blocks
+            )
+            slack_ts = res["ts"]
+        else:
+            # 更新
+            slack_client.chat_update(
+                channel=CHANNEL_ID,
+                ts=slack_ts,
+                text="状態リスト",
+                blocks=blocks
+            )
+
+    except Exception as e:
+        print("⚠️ Slack更新エラー:", e)
 
 # =========================================
 # DB保存関数
@@ -78,10 +112,8 @@ def save_new_state(room_status_id: int, start_time: str):
             VALUES (%s, %s)
         """, (room_status_id, start_time))
         conn.commit()
-        return cursor.lastrowid
     except Exception as e:
         print("⚠️ DB保存エラー:", e)
-        return None
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -119,7 +151,6 @@ async def receive_result(request: Request):
 
     try:
         class_id = int(data["class_id"])
-        confidence = float(data["confidence"])
         timestamp = data["timestamp"]
     except Exception:
         raise HTTPException(status_code=422, detail="Invalid JSON format")
@@ -138,7 +169,6 @@ async def receive_result(request: Request):
         room_status_id = class_id
         room_status = CLASS_MAP.get(room_status_id, "不明")
 
-    result_id = None
 
     # 状態変化チェック
     if room_status != last_room_status:
@@ -146,7 +176,7 @@ async def receive_result(request: Request):
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
 
-        result_id = save_new_state(room_status_id, now)
+        save_new_state(room_status_id, now)
         current_start_time = now
         last_room_status = room_status
 
@@ -154,7 +184,7 @@ async def receive_result(request: Request):
         # 🔥 Slack送信（リスト表示）
         # ===============================
         try:
-            blocks = create_game_blocks(room_status, "何もしてない")
+            blocks = create_game_blocks(room_status, analog_status)
 
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzo",
@@ -177,6 +207,48 @@ async def receive_result(request: Request):
         "formatted_time": now
     })
 
+# =========================================
+# /analog エンドポイント
+@app.post("/analog")
+async def receive_analog(request: Request):
+    global analog_status, last_analog_status, room_status
+
+    data = await request.json()
+
+    try:
+        tag_id = data["tag_id"]  # NFCから送る
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON")
+
+    # 🔥 タグ → ゲーム名
+    analog_status = ANALOG_MAP.get(tag_id, "何もしてない")
+
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
+
+    try:
+        blocks = create_game_blocks(
+            digital=room_status,
+            analog=analog_status
+        )
+
+        slack_client.chat_postMessage(
+            channel="#prj_game_shiteruzo",
+            text= analog_status,
+            blocks=blocks
+        )
+
+    except Exception as e:
+        print(f"⚠️ Slack送信エラー: {e}")
+
+    last_analog_status = analog_status
+    status = "updated"
+
+    return JSONResponse({
+        "status": status,
+        "analog_status": analog_status,
+        "time": now
+    })
 
 # =========================================
 # /packet エンドポイント
