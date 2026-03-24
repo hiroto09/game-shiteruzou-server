@@ -34,6 +34,34 @@ db_config = {
 }
 
 # =========================================
+# 🔥 Block作成（何もしてないも必ず表示）
+def create_game_blocks(status):
+    if status == "何もしてない":
+        text = "☑ 何もしてない 😴"
+    else:
+        text = f"☑ {status}"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "🎮 状態リスト"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text
+            }
+        }
+    ]
+
+    return blocks
+
+
+# =========================================
 # DB保存関数
 def save_new_state(room_status_id: int, start_time: str):
     try:
@@ -76,8 +104,9 @@ def close_last_state(end_time: str):
         if 'conn' in locals():
             conn.close()
 
+
 # =========================================
-# /result エンドポイント（JSON）
+# /result エンドポイント
 @app.post("/result")
 async def receive_result(request: Request):
     global last_room_status, room_status, packet_status, current_start_time
@@ -109,8 +138,9 @@ async def receive_result(request: Request):
 
     result_id = None
 
-    # 状態変化チェック & DB保存
+    # 状態変化チェック
     if room_status != last_room_status:
+
         if last_room_status != "不明" and current_start_time:
             close_last_state(now)
 
@@ -118,18 +148,20 @@ async def receive_result(request: Request):
         current_start_time = now
         last_room_status = room_status
 
-        # Slack通知
+        # ===============================
+        # 🔥 Slack送信（リスト表示）
+        # ===============================
         try:
-            if room_status == "何もしてない":
-                message = room_status
-            else:
-                message = f"\n{room_status}をプレイ中！一緒に遊ぼう！🎮"
+            blocks = create_game_blocks(room_status)
 
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzo",
-                text=message
+                text=room_status,  # fallback
+                blocks=blocks
             )
-            print(f"🔔 Slack送信: {message}")
+
+            print(f"🔔 Slack送信（リスト表示）: {room_status}")
+
         except Exception as e:
             print(f"⚠️ Slack送信エラー: {e}")
 
@@ -144,15 +176,18 @@ async def receive_result(request: Request):
         "formatted_time": now
     })
 
+
 # =========================================
-# /packet エンドポイント（JSON）
+# /packet エンドポイント
 @app.post("/packet")
 async def receive_packet(request: Request):
     global packet_status
+
     data = await request.json()
     print("📥 Packet Received:", data)
 
     new_status = data.get("status")
+
     if isinstance(new_status, bool):
         packet_status = new_status
         result = "updated"
@@ -160,17 +195,21 @@ async def receive_packet(request: Request):
         result = "invalid"
 
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
     return JSONResponse({
         "result": result,
         "packet_status": packet_status,
         "updated_at": now
     })
 
+
 # =========================================
 # /events エンドポイント
 @app.post("/events")
 async def slack_events(request: Request):
     data = await request.json()
+
     if data.get("type") == "url_verification":
         return JSONResponse({"challenge": data["challenge"]})
+
     return JSONResponse({"status": "ok"})
