@@ -51,7 +51,7 @@ def create_game_blocks(digital, analog):
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"🎮 デジタル:{digital}"
+            "text": f"🎮 :{digital}"
         }
     })
 
@@ -60,7 +60,7 @@ def create_game_blocks(digital, analog):
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"🎲 アナログ:{analog}"
+            "text": f"🎲 :{analog}"
         }
     })
 
@@ -154,7 +154,7 @@ async def receive_result(request: Request):
         # 🔥 Slack送信（リスト表示）
         # ===============================
         try:
-            blocks = create_game_blocks(room_status, "何もしていない")
+            blocks = create_game_blocks(room_status, "何もしてない")
 
             slack_client.chat_postMessage(
                 channel="#prj_game_shiteruzo",
