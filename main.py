@@ -93,7 +93,7 @@ def create_game_blocks(digital, analog):
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"🎲 :{analog}"
+            "text": f"🃏 :{analog}"
         }
     })
 
