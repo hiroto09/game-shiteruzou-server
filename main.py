@@ -1,20 +1,24 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, HTMLResponse
 from datetime import datetime
 import os
 from dotenv import load_dotenv
 import mysql.connector
-from slack_sdk import WebClient
 
-load_dotenv(verbose=True)
+load_dotenv()
 
-CLASS_MAP = {
-    0: "何もしてない",
-    1: "人生ゲーム",
-    2: "スマブラ",
-    3: "マリオカート"
-}
+app = FastAPI()
 
+# =========================
+# 状態
+# =========================
+class State:
+    analog = "何もしてない"
+    last_analog = "不明"
+
+# =========================
+# マップ
+# =========================
 ANALOG_MAP = {
     "0": "何もしてない",
     "0437ac48be2a81": "カタカナーシ",
@@ -25,202 +29,146 @@ ANALOG_MAP = {
     "04f9ab48be2a81": "カラーコードかるた",
     "043dac48be2a81": "Linuxコマンドかるた",
     "043bac48be2a81": "トランプ",
-    "0443ac48be2a81":"お邪魔者",
-    "0411ac48be2a81":"カタン(大航海時代)",
-    "0444ac48be2a81":"キャンプ場の殺人鬼 ",
-    "0449ac48be2a81":"コヨーテ",
-    "0412ac48be2a81":"犯人は踊る",
-    "043fac48be2a81":"犯人は踊る3",
-    "043cac48be2a81":"お邪魔者2",
-    "043eac48be2a81":"トランプ",
-    "0441ac48be2a81":"ファットプロジェクト",
-    "04ffab48be2a81":"プログラム言語神経衰弱",
-    "04faab48be2a81":"テストプレイなんてしてないよ",
-    "0445ac48be2a81":"まじかる★ベーカリー",
-    "0442ac48be2a81":"カタン(スタンダート)",
-    "0436ac48be2a81":"カタン(スタンダート)",
-    "0421ac48be2a81":"ito",
-    "0413ac48be2a81":"人狼",
-    "0418ac48be2a81":"たった今考えたプロポーズの言葉を君に捧ぐよ",
-    "0432ac48be2a81":"麻雀"
-
+    "0443ac48be2a81": "お邪魔者",
+    "0411ac48be2a81": "カタン(大航海時代)",
+    "0444ac48be2a81": "キャンプ場の殺人鬼",
+    "0449ac48be2a81": "コヨーテ",
+    "0412ac48be2a81": "犯人は踊る",
+    "043fac48be2a81": "犯人は踊る3",
+    "043cac48be2a81": "お邪魔者2",
+    "043eac48be2a81": "トランプ",
+    "0441ac48be2a81": "ファットプロジェクト",
+    "04ffab48be2a81": "プログラム言語神経衰弱",
+    "04faab48be2a81": "テストプレイなんてしてないよ",
+    "0445ac48be2a81": "まじかる★ベーカリー",
+    "0442ac48be2a81": "カタン(スタンダート)",
+    "0436ac48be2a81": "カタン(スタンダート)",
+    "0421ac48be2a81": "ito",
+    "0413ac48be2a81": "人狼",
+    "0418ac48be2a81": "プロポーズ",
+    "0432ac48be2a81": "麻雀"
 }
 
-slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
-app = FastAPI()
-
-# 状態管理
-last_room_status = "不明"
-room_status = "何もしてない"
-last_analog_status = "不明"
-analog_status = "何もしてない"
-packet_status = False
-current_start_time = None
-
-# DB接続情報
+# =========================
+# DB
+# =========================
 db_config = {
-    "host": os.environ.get("DB_HOST", "db"),
-    "user": os.environ.get("DB_USER", "root"),
-    "password": os.environ.get("DB_PASSWORD", ""),
-    "database": os.environ.get("DB_NAME", "game_results"),
-    "port": int(os.environ.get("DB_PORT", "3306")),
+    "host": os.getenv("DB_HOST", "db"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "database": os.getenv("DB_NAME", "game_results"),
+    "port": int(os.getenv("DB_PORT", "3306")),
 }
 
-# =========================================
-# 🔥 Block作成（何もしてないも必ず表示）
-def create_game_blocks(digital, analog):
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "状態リスト"
-            }
-        }
-    ]
-
-    # デジタル
-    blocks.append({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": f"🎮 :{digital}"
-        }
-    })
-
-    # アナログ
-    blocks.append({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": f"🃏 :{analog}"
-        }
-    })
-
-    return blocks
-
-# =========================================
-# slack送信関数
-def post_or_update_slack():
-    global slack_ts
-
-    blocks = create_game_blocks(room_status, analog_status)
-
-    try:
-        if slack_ts is None:
-            # 初回投稿
-            res = slack_client.chat_postMessage(
-                channel=CHANNEL_ID,
-                text="状態リスト",
-                blocks=blocks
-            )
-            slack_ts = res["ts"]
-        else:
-            # 更新
-            slack_client.chat_update(
-                channel=CHANNEL_ID,
-                ts=slack_ts,
-                text="状態リスト",
-                blocks=blocks
-            )
-
-    except Exception as e:
-        print("⚠️ Slack更新エラー:", e)
-
-# =========================================
-# DB保存関数
-def save_new_state(room_status_id: int, start_time: str):
+def execute_db(query, params=None, fetch=False):
     try:
         conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO results (room_status_id, start_time)
-            VALUES (%s, %s)
-        """, (room_status_id, start_time))
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params or ())
         conn.commit()
-    except Exception as e:
-        print("⚠️ DB保存エラー:", e)
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
 
-def close_last_state(end_time: str):
+        if fetch:
+            return cursor.fetchall()
+
+    except Exception as e:
+        print("DBエラー:", e)
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+# =========================
+# analog DB操作
+# =========================
+def save_analog(tag, start):
+    execute_db(
+        "INSERT INTO analog_results (tag_id, start_time) VALUES (%s, %s)",
+        (tag, start)
+    )
+
+def close_analog(end):
+    execute_db(
+        """UPDATE analog_results
+           SET end_time=%s
+           WHERE end_time IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (end,)
+    )
+
+# =========================
+# WebSocket
+# =========================
+clients = []
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    await ws.accept()
+    clients.append(ws)
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE results
-            SET end_time = %s
-            WHERE end_time IS NULL
-            ORDER BY id DESC
-            LIMIT 1
-        """, (end_time,))
-        conn.commit()
-    except Exception as e:
-        print("⚠️ 終了時刻更新エラー:", e)
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        clients.remove(ws)
 
+async def notify():
+    for ws in clients:
+        try:
+            await ws.send_json({"analog": State.analog})
+        except:
+            pass
 
-# =========================================
-# /result エンドポイント
-@app.post("/result")
-async def receive_result(request: Request):
-    global last_room_status, room_status, packet_status, current_start_time
+# =========================
+# util
+# =========================
+def now():
+    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
+# =========================
+# 起動時復元（重要🔥）
+# =========================
+@app.on_event("startup")
+def load_state():
+    result = execute_db(
+        """SELECT * FROM analog_results
+           WHERE end_time IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        fetch=True
+    )
+
+    if result:
+        tag = result[0]["tag_id"]
+        State.analog = ANALOG_MAP.get(tag, "何もしてない")
+
+# =========================
+# analog API
+# =========================
+@app.post("/analog")
+async def analog(request: Request):
     data = await request.json()
 
     try:
-        class_id = int(data["class_id"])
-        timestamp = data["timestamp"]
-    except Exception:
-        raise HTTPException(status_code=422, detail="Invalid JSON format")
+        tag = data["tag_id"]
+    except:
+        raise HTTPException(422, "Invalid JSON")
 
-    # 時刻整形
-    try:
-        now = datetime.fromisoformat(timestamp).strftime("%Y/%m/%d %H:%M:%S")
-    except Exception:
-        now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    current = ANALOG_MAP.get(tag, "何もしてない")
+    t = now()
 
-    # 状態判定
-    if not packet_status:
-        room_status_id = 0
-        room_status = CLASS_MAP[room_status_id]
-    else:
-        room_status_id = class_id
-        room_status = CLASS_MAP.get(room_status_id, "不明")
+    # 状態変化のみ処理
+    if current != State.analog:
 
+        # 前を閉じる
+        if State.analog != "何もしてない":
+            close_analog(t)
 
-    # 状態変化チェック
-    if room_status != last_room_status:
+        # 新規保存（何もしてない以外）
+        if tag != "0":
+            save_analog(tag, t)
 
-        if last_room_status != "不明" and current_start_time:
-            close_last_state(now)
+        State.last_analog = State.analog
+        State.analog = current
 
-        save_new_state(room_status_id, now)
-        current_start_time = now
-        last_room_status = room_status
-
-        # ===============================
-        # 🔥 Slack送信（リスト表示）
-        # ===============================
-        try:
-            blocks = create_game_blocks(room_status, analog_status)
-
-            slack_client.chat_postMessage(
-                channel="#prj_game_shiteruzo",
-                text=room_status,  # fallback
-                blocks=blocks
-            )
-
-
-        except Exception as e:
-            print(f"⚠️ Slack送信エラー: {e}")
+        # Web通知
+        await notify()
 
         status = "saved"
     else:
@@ -228,86 +176,13 @@ async def receive_result(request: Request):
 
     return JSONResponse({
         "status": status,
-        "room_status_name": room_status,
-        "packet_status": packet_status,
-        "formatted_time": now
+        "analog": State.analog,
+        "time": t
     })
 
-# =========================================
-# /analog エンドポイント
-@app.post("/analog")
-async def receive_analog(request: Request):
-    global analog_status, last_analog_status, room_status
-
-    data = await request.json()
-
-    try:
-        tag_id = data["tag_id"]  # NFCから送る
-    except Exception:
-        raise HTTPException(status_code=422, detail="Invalid JSON")
-
-    # 🔥 タグ → ゲーム名
-    analog_status = ANALOG_MAP.get(tag_id, "何もしてない")
-
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-
-    try:
-        blocks = create_game_blocks(
-            digital=room_status,
-            analog=analog_status
-        )
-
-        slack_client.chat_postMessage(
-            channel="#prj_game_shiteruzo",
-            text= analog_status,
-            blocks=blocks
-        )
-
-    except Exception as e:
-        print(f"⚠️ Slack送信エラー: {e}")
-
-    last_analog_status = analog_status
-    status = "updated"
-
-    return JSONResponse({
-        "status": status,
-        "analog_status": analog_status,
-        "time": now
-    })
-
-# =========================================
-# /packet エンドポイント
-@app.post("/packet")
-async def receive_packet(request: Request):
-    global packet_status
-
-    data = await request.json()
-
-    new_status = data.get("status")
-
-    if isinstance(new_status, bool):
-        packet_status = new_status
-        result = "updated"
-    else:
-        result = "invalid"
-
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-    return JSONResponse({
-        "result": result,
-        "packet_status": packet_status,
-        "updated_at": now
-    })
-
-
-# =========================================
-# /events エンドポイント
-@app.post("/events")
-async def slack_events(request: Request):
-    data = await request.json()
-
-    if data.get("type") == "url_verification":
-        return JSONResponse({"challenge": data["challenge"]})
-
-    return JSONResponse({"status": "ok"})
+# =========================
+# HTML配信
+# =========================
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return open("index.html").read()
