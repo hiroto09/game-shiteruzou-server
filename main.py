@@ -1,24 +1,23 @@
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse
 from datetime import datetime
 import os
 from dotenv import load_dotenv
 import mysql.connector
+from slack_sdk import WebClient
 
-load_dotenv()
-
-app = FastAPI()
-
-# =========================
-# 状態
-# =========================
-class State:
-    analog = "何もしてない"
-    last_analog = "不明"
+load_dotenv(verbose=True)
 
 # =========================
-# マップ
+# 定数
 # =========================
+CLASS_MAP = {
+    0: "何もしてない",
+    1: "人生ゲーム",
+    2: "スマブラ",
+    3: "マリオカート"
+}
+
 ANALOG_MAP = {
     "0": "何もしてない",
     "0437ac48be2a81": "カタカナーシ",
@@ -49,60 +48,43 @@ ANALOG_MAP = {
     "0432ac48be2a81": "麻雀"
 }
 
-# =========================
-# DB
-# =========================
-db_config = {
-    "host": os.getenv("DB_HOST", "db"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", ""),
-    "database": os.getenv("DB_NAME", "game_results"),
-    "port": int(os.getenv("DB_PORT", "3306")),
-}
+CHANNEL = "#prj_game_shiteruzo"
 
-def execute_db(query, params=None, fetch=False):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        conn.commit()
-
-        if fetch:
-            return cursor.fetchall()
-
-    except Exception as e:
-        print("DBエラー:", e)
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
+slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+app = FastAPI()
 
 # =========================
-# analog DB操作
+# 状態管理
 # =========================
-def save_analog(tag, start):
-    execute_db(
-        "INSERT INTO analog_results (tag_id, start_time) VALUES (%s, %s)",
-        (tag, start)
-    )
+class State:
+    def __init__(self):
+        self.digital = "何もしてない"
+        self.last_digital = "不明"
+        self.digital_start_time = None
 
-def close_analog(end):
-    execute_db(
-        """UPDATE analog_results
-           SET end_time=%s
-           WHERE end_time IS NULL
-           ORDER BY id DESC LIMIT 1""",
-        (end,)
-    )
+        self.analog = "何もしてない"
+        self.last_analog = "不明"
+        self.analog_start_time = None
+
+        self.packet = False
+
+state = State()
 
 # =========================
-# WebSocket
+# 🔥 WebSocket追加
 # =========================
 clients = []
 
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.append(ws)
+
+    # 接続時に現在のanalog送る
+    await ws.send_json({
+        "analog": state.analog
+    })
+
     try:
         while True:
             await ws.receive_text()
@@ -112,34 +94,136 @@ async def ws_endpoint(ws: WebSocket):
 async def notify():
     for ws in clients:
         try:
-            await ws.send_json({"analog": State.analog})
+            await ws.send_json({
+                "analog": state.analog
+            })
         except:
             pass
 
 # =========================
-# util
+# DB設定
 # =========================
-def now():
-    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+db_config = {
+    "host": os.environ.get("DB_HOST", "db"),
+    "user": os.environ.get("DB_USER", "root"),
+    "password": os.environ.get("DB_PASSWORD", ""),
+    "database": os.environ.get("DB_NAME", "game_results"),
+    "port": int(os.environ.get("DB_PORT", "3306")),
+}
+
+def execute_db(query, params=None):
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(query, params or ())
+        conn.commit()
+    except Exception as e:
+        print("⚠️ DBエラー:", e)
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
 
 # =========================
-# 起動時復元（重要🔥）
+# digital DB
 # =========================
-@app.on_event("startup")
-def load_state():
-    result = execute_db(
-        """SELECT * FROM analog_results
-           WHERE end_time IS NULL
-           ORDER BY id DESC LIMIT 1""",
-        fetch=True
+def save_digital_start(status_id, start_time):
+    execute_db(
+        "INSERT INTO digital_results (status_id, start_time) VALUES (%s, %s)",
+        (status_id, start_time)
     )
 
-    if result:
-        tag = result[0]["tag_id"]
-        State.analog = ANALOG_MAP.get(tag, "何もしてない")
+def close_digital(end_time):
+    execute_db(
+        """UPDATE digital_results SET end_time=%s
+           WHERE end_time IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (end_time,)
+    )
 
 # =========================
-# analog API
+# analog DB
+# =========================
+def save_analog_start(tag_id, start_time):
+    execute_db(
+        "INSERT INTO analog_results (tag_id, start_time) VALUES (%s, %s)",
+        (tag_id, start_time)
+    )
+
+def close_analog(end_time):
+    execute_db(
+        """UPDATE analog_results SET end_time=%s
+           WHERE end_time IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (end_time,)
+    )
+
+# =========================
+# 共通
+# =========================
+def now_str():
+    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
+def parse_time(ts):
+    try:
+        return datetime.fromisoformat(ts).strftime("%Y/%m/%d %H:%M:%S")
+    except:
+        return now_str()
+
+def create_blocks():
+    return [
+        {"type": "header", "text": {"type": "plain_text", "text": "状態リスト"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 :{state.digital}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 :{state.analog}"}}
+    ]
+
+def send_slack(text):
+    try:
+        slack_client.chat_postMessage(
+            channel=CHANNEL,
+            text=text,
+            blocks=create_blocks()
+        )
+    except Exception as e:
+        print("⚠️ Slackエラー:", e)
+
+# =========================
+# /result（digital）
+# =========================
+@app.post("/result")
+async def result(request: Request):
+    data = await request.json()
+
+    try:
+        class_id = int(data["class_id"])
+        now = parse_time(data["timestamp"])
+    except:
+        raise HTTPException(422, "Invalid JSON")
+
+    digital_id = 0 if not state.packet else class_id
+    new_digital = CLASS_MAP.get(digital_id, "不明")
+
+    if new_digital != state.last_digital:
+
+        if state.last_digital != "不明" and state.digital_start_time:
+            close_digital(now)
+
+        if new_digital != "何もしてない":
+            save_digital_start(digital_id, now)
+            state.digital_start_time = now
+        else:
+            state.digital_start_time = None
+
+        state.last_digital = new_digital
+        state.digital = new_digital
+
+        send_slack(new_digital)
+
+    return JSONResponse({
+        "digital_status_name": state.digital
+    })
+
+# =========================
+# /analog（ここだけ通知追加🔥）
 # =========================
 @app.post("/analog")
 async def analog(request: Request):
@@ -150,39 +234,50 @@ async def analog(request: Request):
     except:
         raise HTTPException(422, "Invalid JSON")
 
-    current = ANALOG_MAP.get(tag, "何もしてない")
-    t = now()
+    now = now_str()
+    new_analog = ANALOG_MAP.get(tag, "何もしてない")
 
-    # 状態変化のみ処理
-    if current != State.analog:
+    if new_analog != state.last_analog:
 
-        # 前を閉じる
-        if State.analog != "何もしてない":
-            close_analog(t)
+        if state.last_analog != "不明" and state.analog_start_time:
+            close_analog(now)
 
-        # 新規保存（何もしてない以外）
-        if tag != "0":
-            save_analog(tag, t)
+        if new_analog != "何もしてない":
+            save_analog_start(tag, now)
+            state.analog_start_time = now
+        else:
+            state.analog_start_time = None
 
-        State.last_analog = State.analog
-        State.analog = current
+        state.last_analog = new_analog
+        state.analog = new_analog
 
-        # Web通知
-        await notify()
-
-        status = "saved"
-    else:
-        status = "skipped"
+        send_slack(new_analog)
+        await notify()  # ← 🔥 これだけ追加
 
     return JSONResponse({
-        "status": status,
-        "analog": State.analog,
-        "time": t
+        "analog_status": state.analog
     })
 
 # =========================
-# HTML配信
+# /packet
 # =========================
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    return open("index.html").read()
+@app.post("/packet")
+async def packet(request: Request):
+    data = await request.json()
+
+    if isinstance(data.get("status"), bool):
+        state.packet = data["status"]
+
+    return {"packet": state.packet}
+
+# =========================
+# /events
+# =========================
+@app.post("/events")
+async def events(request: Request):
+    data = await request.json()
+
+    if data.get("type") == "url_verification":
+        return {"challenge": data["challenge"]}
+
+    return {"status": "ok"}
