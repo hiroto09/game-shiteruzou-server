@@ -1,3 +1,4 @@
+# server.py
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from datetime import datetime
@@ -71,7 +72,7 @@ class State:
 state = State()
 
 # =========================
-# 🔥 WebSocket追加
+# WebSocket（analog専用）
 # =========================
 clients = []
 
@@ -80,7 +81,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.append(ws)
 
-    # 接続時に現在のanalog送る
+    # 初期状態（analogだけ）
     await ws.send_json({
         "analog": state.analog
     })
@@ -89,16 +90,22 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
-        clients.remove(ws)
+        if ws in clients:
+            clients.remove(ws)
 
 async def notify():
+    dead = []
     for ws in clients:
         try:
             await ws.send_json({
                 "analog": state.analog
             })
         except:
-            pass
+            dead.append(ws)
+
+    for ws in dead:
+        if ws in clients:
+            clients.remove(ws)
 
 # =========================
 # DB設定
@@ -118,13 +125,13 @@ def execute_db(query, params=None):
         cursor.execute(query, params or ())
         conn.commit()
     except Exception as e:
-        print("⚠️ DBエラー:", e)
+        print("DBエラー:", e)
     finally:
         if 'cursor' in locals(): cursor.close()
         if 'conn' in locals(): conn.close()
 
 # =========================
-# digital DB
+# DB操作
 # =========================
 def save_digital_start(status_id, start_time):
     execute_db(
@@ -134,15 +141,10 @@ def save_digital_start(status_id, start_time):
 
 def close_digital(end_time):
     execute_db(
-        """UPDATE digital_results SET end_time=%s
-           WHERE end_time IS NULL
-           ORDER BY id DESC LIMIT 1""",
+        "UPDATE digital_results SET end_time=%s WHERE end_time IS NULL ORDER BY id DESC LIMIT 1",
         (end_time,)
     )
 
-# =========================
-# analog DB
-# =========================
 def save_analog_start(tag_id, start_time):
     execute_db(
         "INSERT INTO analog_results (tag_id, start_time) VALUES (%s, %s)",
@@ -151,9 +153,7 @@ def save_analog_start(tag_id, start_time):
 
 def close_analog(end_time):
     execute_db(
-        """UPDATE analog_results SET end_time=%s
-           WHERE end_time IS NULL
-           ORDER BY id DESC LIMIT 1""",
+        "UPDATE analog_results SET end_time=%s WHERE end_time IS NULL ORDER BY id DESC LIMIT 1",
         (end_time,)
     )
 
@@ -172,8 +172,8 @@ def parse_time(ts):
 def create_blocks():
     return [
         {"type": "header", "text": {"type": "plain_text", "text": "状態リスト"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 :{state.digital}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 :{state.analog}"}}
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
     ]
 
 def send_slack(text):
@@ -184,10 +184,10 @@ def send_slack(text):
             blocks=create_blocks()
         )
     except Exception as e:
-        print("⚠️ Slackエラー:", e)
+        print("Slackエラー:", e)
 
 # =========================
-# /result（digital）
+# digital（変更なし）
 # =========================
 @app.post("/result")
 async def result(request: Request):
@@ -223,15 +223,14 @@ async def result(request: Request):
     })
 
 # =========================
-# /analog（ここだけ通知追加🔥）
+# analog（Web通知あり）
 # =========================
 @app.post("/analog")
 async def analog(request: Request):
     data = await request.json()
 
-    try:
-        tag = data["tag_id"]
-    except:
+    tag = data.get("tag_id")
+    if tag is None:
         raise HTTPException(422, "Invalid JSON")
 
     now = now_str()
@@ -252,14 +251,14 @@ async def analog(request: Request):
         state.analog = new_analog
 
         send_slack(new_analog)
-        await notify()  # ← 🔥 これだけ追加
+        await notify()  # ← Web更新
 
     return JSONResponse({
         "analog_status": state.analog
     })
 
 # =========================
-# /packet
+# packet（変更なし）
 # =========================
 @app.post("/packet")
 async def packet(request: Request):
