@@ -1,4 +1,3 @@
-# server.py
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from datetime import datetime
@@ -6,13 +5,14 @@ import os
 from dotenv import load_dotenv
 import mysql.connector
 from slack_sdk import WebClient
+import requests  # ← 追加
 
-load_dotenv(verbose=True)
+load_dotenv()
 
 # =========================
 # 定数
 # =========================
-CLASS_MAP = {
+DIGITAL_MAP = {
     0: "何もしてない",
     1: "人生ゲーム",
     2: "スマブラ",
@@ -20,36 +20,39 @@ CLASS_MAP = {
 }
 
 ANALOG_MAP = {
-    "0": "何もしてない",
-    "0437ac48be2a81": "カタカナーシ",
-    "0433ac48be2a81": "チェス",
-    "0434ac48be2a81": "モダンアート",
-    "043aac48be2a81": "マーダーミステリー",
+    "00": "何もしてない",
+    "0437ac48be2a81": "カタカナーシ", 
+    "0433ac48be2a81": "チェス", 
+    "0434ac48be2a81": "モダンアート", 
+    "043aac48be2a81": "マーダーミステリー", 
     "0435ac48be2a81": "UIかるた",
-    "04f9ab48be2a81": "カラーコードかるた",
-    "043dac48be2a81": "Linuxコマンドかるた",
-    "043bac48be2a81": "トランプ",
-    "0443ac48be2a81": "お邪魔者",
-    "0411ac48be2a81": "カタン(大航海時代)",
-    "0444ac48be2a81": "キャンプ場の殺人鬼",
-    "0449ac48be2a81": "コヨーテ",
-    "0412ac48be2a81": "犯人は踊る",
-    "043fac48be2a81": "犯人は踊る3",
-    "043cac48be2a81": "お邪魔者2",
-    "043eac48be2a81": "トランプ",
-    "0441ac48be2a81": "ファットプロジェクト",
-    "04ffab48be2a81": "プログラム言語神経衰弱",
-    "04faab48be2a81": "テストプレイなんてしてないよ",
-    "0445ac48be2a81": "まじかる★ベーカリー",
-    "0442ac48be2a81": "カタン(スタンダート)",
-    "0436ac48be2a81": "カタン(スタンダート)",
-    "0421ac48be2a81": "ito",
-    "0413ac48be2a81": "人狼",
-    "0418ac48be2a81": "プロポーズ",
+    "04f9ab48be2a81": "カラーコードかるた", 
+    "043dac48be2a81": "Linuxコマンドかるた", 
+    "043bac48be2a81": "トランプ", 
+    "0443ac48be2a81": "お邪魔者", 
+    "0411ac48be2a81": "カタン(大航海時代)", 
+    "0444ac48be2a81": "キャンプ場の殺人鬼", 
+    "0449ac48be2a81": "コヨーテ", 
+    "0412ac48be2a81": "犯人は踊る", 
+    "043fac48be2a81": "犯人は踊る3", 
+    "043cac48be2a81": "お邪魔者2", 
+    "043eac48be2a81": "トランプ", 
+    "0441ac48be2a81": "ファットプロジェクト", 
+    "04ffab48be2a81": "プログラム言語神経衰弱", 
+    "04faab48be2a81": "テストプレイなんてしてないよ", 
+    "0445ac48be2a81": "まじかる★ベーカリー", 
+    "0442ac48be2a81": "カタン(スタンダート)", 
+    "0436ac48be2a81": "カタン(スタンダート)", 
+    "0421ac48be2a81": "ito", 
+    "0413ac48be2a81": "人狼", 
+    "0418ac48be2a81": "プロポーズ", 
     "0432ac48be2a81": "麻雀"
 }
 
+EMPTY_ID = 0
+
 CHANNEL = "#prj_game_shiteruzo"
+LOG_API_URL = os.getenv("LOG_API_URL")
 
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
@@ -59,12 +62,16 @@ app = FastAPI()
 # =========================
 class State:
     def __init__(self):
+        # digital
         self.digital = "何もしてない"
-        self.last_digital = "不明"
+        self.last_digital = None
+        self.last_digital_id = None
         self.digital_start_time = None
 
+        # analog
         self.analog = "何もしてない"
-        self.last_analog = "不明"
+        self.last_analog = None
+        self.last_analog_id = None
         self.analog_start_time = None
 
         self.packet = False
@@ -72,93 +79,7 @@ class State:
 state = State()
 
 # =========================
-# WebSocket（analog専用）
-# =========================
-clients = []
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    clients.append(ws)
-
-    # 初期状態（analogだけ）
-    await ws.send_json({
-        "analog": state.analog
-    })
-
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        if ws in clients:
-            clients.remove(ws)
-
-async def notify():
-    dead = []
-    for ws in clients:
-        try:
-            await ws.send_json({
-                "analog": state.analog
-            })
-        except:
-            dead.append(ws)
-
-    for ws in dead:
-        if ws in clients:
-            clients.remove(ws)
-
-# =========================
-# DB設定
-# =========================
-db_config = {
-    "host": os.environ.get("DB_HOST", "db"),
-    "user": os.environ.get("DB_USER", "root"),
-    "password": os.environ.get("DB_PASSWORD", ""),
-    "database": os.environ.get("DB_NAME", "game_results"),
-    "port": int(os.environ.get("DB_PORT", "3306")),
-}
-
-def execute_db(query, params=None):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute(query, params or ())
-        conn.commit()
-    except Exception as e:
-        print("DBエラー:", e)
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
-# =========================
-# DB操作
-# =========================
-def save_digital_start(status_id, start_time):
-    execute_db(
-        "INSERT INTO digital_results (status_id, start_time) VALUES (%s, %s)",
-        (status_id, start_time)
-    )
-
-def close_digital(end_time):
-    execute_db(
-        "UPDATE digital_results SET end_time=%s WHERE end_time IS NULL ORDER BY id DESC LIMIT 1",
-        (end_time,)
-    )
-
-def save_analog_start(tag_id, start_time):
-    execute_db(
-        "INSERT INTO analog_results (tag_id, start_time) VALUES (%s, %s)",
-        (tag_id, start_time)
-    )
-
-def close_analog(end_time):
-    execute_db(
-        "UPDATE analog_results SET end_time=%s WHERE end_time IS NULL ORDER BY id DESC LIMIT 1",
-        (end_time,)
-    )
-
-# =========================
-# 共通
+# utils
 # =========================
 def now_str():
     return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
@@ -169,25 +90,64 @@ def parse_time(ts):
     except:
         return now_str()
 
-def create_blocks():
-    return [
-        {"type": "header", "text": {"type": "plain_text", "text": "状態リスト"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
-    ]
+def send_log(event_id, event_time, status):
+    try:
+        requests.post(
+            LOG_API_URL,
+            json={
+                "logs": [
+                    {
+                        "event_id": event_id,
+                        "event_time": event_time,
+                        "status": status
+                    }
+                ]
+            },
+            timeout=3
+        )
+    except Exception as e:
+        print("ログ送信エラー:", e)
 
-def send_slack(text):
+def send_slack():
     try:
         slack_client.chat_postMessage(
             channel=CHANNEL,
-            text=text,
-            blocks=create_blocks()
+            text="状態更新",
+            blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
+            ]
         )
     except Exception as e:
         print("Slackエラー:", e)
 
 # =========================
-# digital（変更なし）
+# WebSocket
+# =========================
+clients = []
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    clients.append(ws)
+
+    await ws.send_json({"analog": state.analog})
+
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        clients.remove(ws)
+
+async def notify():
+    for ws in clients:
+        try:
+            await ws.send_json({"analog": state.analog})
+        except:
+            pass
+
+# =========================
+# digital
 # =========================
 @app.post("/result")
 async def result(request: Request):
@@ -199,31 +159,27 @@ async def result(request: Request):
     except:
         raise HTTPException(422, "Invalid JSON")
 
-    digital_id = 0 if not state.packet else class_id
-    new_digital = CLASS_MAP.get(digital_id, "不明")
+    digital_id = str(class_id) if state.packet else "0"
+    new_digital = DIGITAL_MAP.get(digital_id, "不明")
 
-    if new_digital != state.last_digital:
+    if digital_id != state.last_digital_id:
 
-        if state.last_digital != "不明" and state.digital_start_time:
-            close_digital(now)
+        # 終了
+        if state.last_digital_id is not None:
+            send_log(state.last_digital_id, now, 2)
 
-        if new_digital != "何もしてない":
-            save_digital_start(digital_id, now)
-            state.digital_start_time = now
-        else:
-            state.digital_start_time = None
+        # 開始
+        send_log(digital_id, now, 1)
 
-        state.last_digital = new_digital
+        state.last_digital_id = digital_id
         state.digital = new_digital
 
-        send_slack(new_digital)
+        send_slack()
 
-    return JSONResponse({
-        "digital_status_name": state.digital
-    })
+    return {"digital_status_name": state.digital}
 
 # =========================
-# analog（Web通知あり）
+# analog
 # =========================
 @app.post("/analog")
 async def analog(request: Request):
@@ -234,49 +190,43 @@ async def analog(request: Request):
         raise HTTPException(422, "Invalid JSON")
 
     now = now_str()
-    new_analog = ANALOG_MAP.get(tag, "何もしてない")
 
-    if new_analog != state.last_analog:
+    analog_id = tag if tag in ANALOG_MAP else "00"
+    new_analog = ANALOG_MAP.get(analog_id, "何もしてない")
 
-        if state.last_analog != "不明" and state.analog_start_time:
-            close_analog(now)
+    if analog_id != state.last_analog_id:
 
-        if new_analog != "何もしてない":
-            save_analog_start(tag, now)
-            state.analog_start_time = now
-        else:
-            state.analog_start_time = None
+        # 終了
+        if state.last_analog_id is not None:
+            send_log(state.last_analog_id, now, 2)
 
-        state.last_analog = new_analog
+        # 開始
+        send_log(analog_id, now, 1)
+
+        state.last_analog_id = analog_id
         state.analog = new_analog
 
-        send_slack(new_analog)
-        await notify()  # ← Web更新
+        send_slack()
+        await notify()
 
-    return JSONResponse({
-        "analog_status": state.analog
-    })
+    return {"analog_status": state.analog}
 
 # =========================
-# packet（変更なし）
+# packet
 # =========================
 @app.post("/packet")
 async def packet(request: Request):
     data = await request.json()
-
     if isinstance(data.get("status"), bool):
         state.packet = data["status"]
-
     return {"packet": state.packet}
 
 # =========================
-# /events
+# events
 # =========================
 @app.post("/events")
 async def events(request: Request):
     data = await request.json()
-
     if data.get("type") == "url_verification":
         return {"challenge": data["challenge"]}
-
     return {"status": "ok"}
