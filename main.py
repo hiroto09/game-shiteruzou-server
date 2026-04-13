@@ -92,7 +92,7 @@ def parse_time(ts):
 
 def send_log(event_id, event_time, status):
     try:
-        requests.post(
+        res = requests.post(
             LOG_API_URL,
             json={
                 "logs": [
@@ -105,6 +105,13 @@ def send_log(event_id, event_time, status):
             },
             timeout=3
         )
+        ## デバッグ用ログ
+        print("LOG SEND:",
+            "event_id=", event_id,
+            "status=", status,
+            "HTTP=", res.status_code,
+            "response=", res.text)
+
     except Exception as e:
         print("ログ送信エラー:", e)
 
