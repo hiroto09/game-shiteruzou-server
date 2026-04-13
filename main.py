@@ -98,14 +98,14 @@ def send_log(event_id, event_time, status):
                 "logs": [
                     {
                         "event_id": event_id,
-                        "event_time": event_time,
-                        "status": status
+                        "event_time": datetime.now().isoformat(),  # ISOにしとくのが安全
+                        "status_id": status   # ← ここ直す！！
                     }
                 ]
             },
             timeout=3
         )
-        ## デバッグ用ログ
+
         print("LOG SEND:",
             "event_id=", event_id,
             "status=", status,
