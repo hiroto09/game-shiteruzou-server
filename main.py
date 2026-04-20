@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
 import mysql.connector
@@ -49,13 +49,15 @@ ANALOG_MAP = {
     "0432ac48be2a81": "麻雀"
 }
 
-EMPTY_ID = 0
 
+EMPTY_ID = 0
 CHANNEL = "#prj_game_shiteruzo"
 LOG_API_URL = os.getenv("LOG_API_URL")
 
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 app = FastAPI()
+
+JST = timezone(timedelta(hours=9))
 
 # =========================
 # 状態管理
@@ -81,14 +83,8 @@ state = State()
 # =========================
 # utils
 # =========================
-def now_str():
-    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
-def parse_time(ts):
-    try:
-        return datetime.fromisoformat(ts).strftime("%Y/%m/%d %H:%M:%S")
-    except:
-        return now_str()
+
 
 def send_log(event_id, event_time, status):
     try:
@@ -98,12 +94,11 @@ def send_log(event_id, event_time, status):
                 "logs": [
                     {
                         "event_id": event_id,
-                        "event_time": datetime.now().isoformat(),  # ISOにしとくのが安全
-                        "status_id": status   # ← ここ直す！！
+                        "event_time": event_time,  # ← こっち使う
+                        "status_id": status
                     }
                 ]
             },
-            timeout=3
         )
 
         print("LOG SEND:",
@@ -162,7 +157,7 @@ async def result(request: Request):
 
     try:
         class_id = int(data["class_id"])
-        now = parse_time(data["timestamp"])
+        now = datetime.now(JST).isoformat()
     except:
         raise HTTPException(422, "Invalid JSON")
 
@@ -196,7 +191,7 @@ async def analog(request: Request):
     if tag is None:
         raise HTTPException(422, "Invalid JSON")
 
-    now = now_str()
+    now = datetime.now(JST).isoformat()
 
     analog_id = tag if tag in ANALOG_MAP else "00"
     new_analog = ANALOG_MAP.get(analog_id, "何もしてない")
