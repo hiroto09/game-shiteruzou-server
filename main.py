@@ -1,9 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
-import mysql.connector
+import asyncio
 from slack_sdk import WebClient
 import requests  # ← 追加
 
@@ -53,8 +52,10 @@ ANALOG_MAP = {
 EMPTY_ID = 0
 CHANNEL = "#prj_game_shiteruzo"
 LOG_API_URL = os.getenv("LOG_API_URL")
-
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+STAYWATCH_API_URL = os.getenv("STAYWATCH_API_URL")
+STAYWATCH_API_KEY = os.getenv("STAYWATCH_API_KEY")
+
 app = FastAPI()
 
 JST = timezone(timedelta(hours=9))
@@ -123,17 +124,46 @@ def send_slack():
     except Exception as e:
         print("Slackエラー:", e)
 
+
+## =========================
+## メンバー一覧取得
+## =========================
+
+def get_stayers():
+    if not STAYWATCH_API_URL or not STAYWATCH_API_KEY:
+        raise HTTPException(500, "環境変数が設定されていません")
+
+    try:
+        res = requests.get(
+            STAYWATCH_API_URL,
+            headers={
+                "Authorization": f"Bearer {STAYWATCH_API_KEY}"
+            },
+            timeout=5
+        )
+
+        if res.status_code != 200:
+            raise HTTPException(res.status_code, "外部APIエラー")
+
+        return res.json()
+
+    except requests.RequestException:
+        raise HTTPException(500, "外部APIに接続できません")
+    
+
 # =========================
 # WebSocket
 # =========================
 clients = []
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.append(ws)
 
-    await ws.send_json({"analog": state.analog})
+    await ws.send_json({
+        "analog": state.analog,
+        "users": []
+    })
 
     try:
         while True:
@@ -141,10 +171,26 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         clients.remove(ws)
 
+
 async def notify():
+    users = []
+
+    if state.analog != "何もしてない":
+        try:
+            loop = asyncio.get_event_loop()
+            stayers = await loop.run_in_executor(None, get_stayers)
+
+            users = [user["name"] for user in stayers]
+        except Exception as e:
+            print("stayers取得エラー:", e)
+            users = []
+
     for ws in clients:
         try:
-            await ws.send_json({"analog": state.analog})
+            await ws.send_json({
+                "analog": state.analog,
+                "users": users
+            })
         except:
             pass
 
