@@ -137,7 +137,7 @@ def get_stayers():
         res = requests.get(
             STAYWATCH_API_URL,
             headers={
-                "Authorization": f"Bearer {STAYWATCH_API_KEY}"
+                "X-API-Key": STAYWATCH_API_KEY
             },
             timeout=5
         )
