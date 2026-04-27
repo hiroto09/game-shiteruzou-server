@@ -147,8 +147,9 @@ def get_stayers():
 
         return res.json()
 
-    except requests.RequestException:
-        raise HTTPException(500, "外部APIに接続できません")
+    except requests.RequestException as e:
+        print("🔥 requestsエラー:", e)
+        raise HTTPException(500, f"外部API接続エラー: {e}")
     
 
 # =========================
