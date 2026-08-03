@@ -199,7 +199,7 @@ async def notify():
 # =========================
 # digital
 # =========================
-@app.post("/result")
+@app.post("/digital")
 async def result(request: Request):
     data = await request.json()
 
@@ -264,12 +264,12 @@ async def analog(request: Request):
 # =========================
 # packet
 # =========================
-@app.post("/packet")
-async def packet(request: Request):
-    data = await request.json()
-    if isinstance(data.get("status"), bool):
-        state.packet = data["status"]
-    return {"packet": state.packet}
+# @app.post("/packet")
+# async def packet(request: Request):
+#     data = await request.json()
+#     if isinstance(data.get("status"), bool):
+#         state.packet = data["status"]
+#     return {"packet": state.packet}
 
 # =========================
 # events
