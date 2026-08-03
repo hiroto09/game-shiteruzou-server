@@ -232,7 +232,7 @@ async def result(request: Request):
     except:
         raise HTTPException(422, "Invalid JSON")
 
-    digital_id = str(class_id) if state.packet else "0"
+    digital_id = str(class_id)
     new_digital = DIGITAL_MAP.get(digital_id, "不明")
 
     if digital_id != state.last_digital_id:
