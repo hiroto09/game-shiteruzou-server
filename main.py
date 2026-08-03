@@ -114,16 +114,39 @@ def send_log(event_id, event_time, status):
 
 def send_slack():
     try:
-        slack_client.chat_postMessage(
+        print("📢 Slack送信開始")
+        print("channel:", CHANNEL)
+        print("digital:", state.digital)
+        print("analog:", state.analog)
+
+        response = slack_client.chat_postMessage(
             channel=CHANNEL,
             text="状態更新",
             blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"🎮 {state.digital}"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"🃏 {state.analog}"
+                    }
+                }
             ]
         )
+
+        print("✅ Slack送信成功")
+        print("Slack response:", response)
+
     except Exception as e:
-        print("Slackエラー:", e)
+        print("❌ Slackエラー:")
+        print(type(e).__name__)
+        print(e)
 
 
 ## =========================
