@@ -209,6 +209,19 @@ def update_game_map():
 
 update_game_map()
 
+print(
+    "===== GAME_MAP ====="
+)
+
+for game_id, game_name in GAME_MAP.items():
+
+    print(
+        f'"{game_id}": "{game_name}",'
+    )
+
+print(
+    "===================="
+)
 
 # =========================
 # utils
