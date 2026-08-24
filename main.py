@@ -46,7 +46,7 @@ JST = timezone(timedelta(hours=9))
 # IP制限設定
 # =========================
 # アクセスを許可するIPアドレスのリスト
-ALLOWED_IPS = ["192.168.101.101"] 
+ALLOWED_IPS = ["192.168.101.101", "202.15.17.104"]
 
 @app.middleware("http")
 async def ip_restriction_middleware(request: Request, call_next):
