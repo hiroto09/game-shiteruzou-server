@@ -130,9 +130,20 @@
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                
                 // サーバーから送られてくるデータのキー名に合わせて適宜変更してください
                 if (data.game_name || data.analog) {
-                    gameNameEl.textContent = data.game_name || data.analog || "何もしてない";
+                    const newGameName = data.game_name || data.analog || "何もしてない";
+                    
+                    // ゲームが変更された時にチェックボックスをリセットする処理
+                    if (gameNameEl.textContent !== newGameName) {
+                        gameNameEl.textContent = newGameName;
+                        
+                        // すべてのチェックボックスのチェックを外す
+                        document.querySelectorAll('input[name="member"]').forEach(cb => {
+                            cb.checked = false;
+                        });
+                    }
                 }
             };
 

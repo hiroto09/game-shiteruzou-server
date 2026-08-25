@@ -238,6 +238,11 @@ async def handle_analog_change(new_id, new_members):
 
     # ゲームIDが変わった か、メンバーが変わった場合
     if new_id != state.last_analog_id or new_members != state.analog_members:
+        
+        # ▼ 追加: ゲームが変わった場合はメンバーをリセットする
+        if new_id != state.last_analog_id:
+            new_members = []
+
         # 古い状態の終了ログ
         if state.last_analog_id != "0":
             send_log(state.last_analog_id, now, 2, members=state.analog_members)
@@ -254,7 +259,6 @@ async def handle_analog_change(new_id, new_members):
         changed = True
 
     if changed:
-        send_slack()
         await notify()
 
 
