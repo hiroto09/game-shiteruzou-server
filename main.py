@@ -139,25 +139,38 @@ def get_stayers():
 # ログ送信・Slack送信
 # =========================
 
-def send_log(event_id, event_time, status, members=None):
+def send_log(event_id, event_time, status, members=None, room_users=None):
     if str(event_id) == "0":
         return
 
     try:
+        # API仕様に合わせたJSON構造を作成
         log_data = {
-            "event_id": event_id,
+            "event_id": str(event_id),
             "event_time": event_time,
-            "status_id": status
+            "status_id": int(status)
         }
+        
+        # メンバー指定があれば participate_users として追加
         if members is not None:
-            log_data["members"] = members
+            # membersが文字列のリストになっている可能性を考慮し、API仕様(数値)に合わせる場合は適宜キャストが必要
+            # 例: [int(m) for m in members] 
+            log_data["participate_users"] = [int(m) for m in members]
+        else:
+            log_data["participate_users"] = []
+
+        # room_users があれば追加 (今回は現状取得していないため空になる想定)
+        if room_users is not None:
+            log_data["room_users"] = [int(u) for u in room_users]
+        else:
+            log_data["room_users"] = []
 
         res = requests.post(LOG_API_URL, json={"logs": [log_data]}, timeout=5)
-        print(f"LOG SEND: id={event_id} status={status} members={members} HTTP={res.status_code}")
+        print(f"LOG SEND: id={event_id} status={status} participants={log_data['participate_users']} HTTP={res.status_code}")
     except Exception as e:
         print("ログ送信エラー:", e)
-
-
+        
+        
 def send_slack():
     try:
         slack_client.chat_postMessage(
