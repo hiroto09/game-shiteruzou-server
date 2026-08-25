@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ゲーム状況モニター</title>
-    <!-- 見た目を整えるための Tailwind CSS -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 text-gray-800 p-4 md:p-8 font-sans">
@@ -15,20 +15,10 @@
         
         <!-- ステータス表示エリア -->
         <div class="mb-8 p-5 border rounded-lg bg-gray-50 shadow-inner">
-            <h2 class="text-lg font-semibold mb-4 text-gray-700 border-b pb-2">現在のステータス</h2>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <p class="text-sm text-gray-500 mb-1">プレイ中のゲーム</p>
-                    <p class="text-xl font-bold text-gray-800" id="game-name">ロード中...</p>
-                </div>
-                <div>
-                    <p class="text-sm text-gray-500 mb-1">カメラ推論状態</p>
-                    <p class="text-lg font-bold" id="camera-status">ロード中...</p>
-                </div>
-                <div class="col-span-2 mt-2">
-                    <p class="text-sm text-gray-500 mb-1">参加メンバー</p>
-                    <p class="text-lg font-bold text-emerald-600" id="playing-users">-</p>
-                </div>
+            <h2 class="text-lg font-semibold mb-2 text-gray-700 border-b pb-2">現在のステータス</h2>
+            <div>
+                <p class="text-sm text-gray-500 mb-1">プレイ中のゲーム</p>
+                <p class="text-xl font-bold text-gray-800" id="game-name">ロード中...</p>
             </div>
         </div>
 
@@ -37,7 +27,7 @@
             <h2 class="text-lg font-semibold mb-4 text-gray-700 border-b pb-2">👥 参加メンバーの選択</h2>
             <form id="members-form">
                 <div id="members-list" class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-                    <!-- ここにJavaScriptでチェックボックスが動的に生成されます -->
+                    <!-- JavaScriptで動的にチェックボックスが生成されます -->
                 </div>
                 <button type="submit" id="submit-btn" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
                     メンバー情報を更新する
@@ -49,8 +39,6 @@
     <script>
         document.addEventListener("DOMContentLoaded", async () => {
             const gameNameEl = document.getElementById("game-name");
-            const cameraStatusEl = document.getElementById("camera-status");
-            const playingUsersEl = document.getElementById("playing-users");
             const membersListDiv = document.getElementById("members-list");
             const submitBtn = document.getElementById("submit-btn");
 
@@ -61,7 +49,6 @@
                     fetch("/api/members")
                 ]);
                 
-                // IP制限などで弾かれた場合のエラーハンドリング
                 if (!statusRes.ok || !membersRes.ok) {
                     throw new Error("アクセスが拒否されたか、サーバーエラーが発生しました。");
                 }
@@ -69,16 +56,9 @@
                 const statusData = await statusRes.json();
                 const membersData = await membersRes.json();
 
-                // --- ステータス反映 ---
-                gameNameEl.textContent = statusData.confirmed.game_name || "何もしてない";
-                
-                if (statusData.inference_running) {
-                    cameraStatusEl.textContent = "動作中 🟢";
-                    cameraStatusEl.classList.add("text-emerald-600");
-                } else {
-                    cameraStatusEl.textContent = "停止中 🔴";
-                    cameraStatusEl.classList.add("text-red-500");
-                }
+                // --- ゲーム名の反映 ---
+                // ※サーバー側のJSON構造に合わせてキー（confirmed や game_name など）を適宜調整してください
+                gameNameEl.textContent = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
 
                 // --- メンバーチェックボックスの生成 ---
                 membersData.members.forEach(member => {
@@ -91,7 +71,7 @@
                     checkbox.value = member.id;
                     checkbox.className = "form-checkbox h-5 w-5 text-indigo-600 rounded focus:ring-indigo-500";
                     
-                    if (statusData.selected_members.includes(member.id)) {
+                    if (statusData.selected_members && statusData.selected_members.includes(member.id)) {
                         checkbox.checked = true;
                     }
                     
@@ -105,8 +85,7 @@
                 });
             } catch (err) {
                 console.error("APIの取得に失敗しました:", err);
-                gameNameEl.textContent = "アクセス不可";
-                cameraStatusEl.textContent = "エラー";
+                gameNameEl.textContent = "データ取得エラー";
             }
 
             // 2. メンバー情報送信時の処理
@@ -138,31 +117,27 @@
                     }, 1500);
                 } catch (err) {
                     console.error(err);
-                    alert("更新に失敗しました。アクセス権限がない可能性があります。");
+                    alert("更新に失敗しました。");
                     submitBtn.textContent = originalText;
                     submitBtn.disabled = false;
                     submitBtn.classList.replace("bg-indigo-300", "bg-indigo-500");
                 }
             });
 
-            // 3. WebSocketでのリアルタイム更新
+            // 3. WebSocketでのリアルタイム更新 (必要に応じてゲーム名等を更新)
             const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                
-                gameNameEl.textContent = data.analog || "何もしてない";
-                
-                if (data.users && data.users.length > 0) {
-                    playingUsersEl.textContent = data.users.join(", ");
-                } else {
-                    playingUsersEl.textContent = "なし";
+                // サーバーから送られてくるデータのキー名に合わせて適宜変更してください
+                if (data.game_name || data.analog) {
+                    gameNameEl.textContent = data.game_name || data.analog || "何もしてない";
                 }
             };
 
             ws.onclose = () => {
-                console.warn("WebSocketが切断されました。再読み込みしてください。");
+                console.warn("WebSocketが切断されました。");
             };
         });
     </script>
