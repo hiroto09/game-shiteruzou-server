@@ -22,8 +22,8 @@
             </div>
         </div>
 
-        <!-- メンバー選択エリア -->
-        <div>
+        <!-- メンバー選択エリア (何もしていない時は非表示にするために id を追加) -->
+        <div id="members-section" class="hidden">
             <h2 class="text-lg font-semibold mb-4 text-gray-700 border-b pb-2">👥 参加メンバーの選択</h2>
             <form id="members-form">
                 <div id="members-list" class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
@@ -39,8 +39,18 @@
     <script>
         document.addEventListener("DOMContentLoaded", async () => {
             const gameNameEl = document.getElementById("game-name");
+            const membersSection = document.getElementById("members-section");
             const membersListDiv = document.getElementById("members-list");
             const submitBtn = document.getElementById("submit-btn");
+
+            // メンバー選択エリアの表示/非表示を切り替える関数
+            const toggleMembersSection = (gameName) => {
+                if (gameName === "何もしてない" || gameName === "ロード中..." || gameName === "データ取得エラー") {
+                    membersSection.classList.add("hidden");
+                } else {
+                    membersSection.classList.remove("hidden");
+                }
+            };
 
             // 1. 初期データの取得 (API呼び出し)
             try {
@@ -57,8 +67,11 @@
                 const membersData = await membersRes.json();
 
                 // --- ゲーム名の反映 ---
-                // ※サーバー側のJSON構造に合わせてキー（confirmed や game_name など）を適宜調整してください
-                gameNameEl.textContent = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
+                const initialGameName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
+                gameNameEl.textContent = initialGameName;
+                
+                // ゲーム名に応じてメンバー選択エリアの表示を切り替え
+                toggleMembersSection(initialGameName);
 
                 // --- メンバーチェックボックスの生成 ---
                 membersData.members.forEach(member => {
@@ -86,6 +99,7 @@
             } catch (err) {
                 console.error("APIの取得に失敗しました:", err);
                 gameNameEl.textContent = "データ取得エラー";
+                toggleMembersSection("データ取得エラー");
             }
 
             // 2. メンバー情報送信時の処理
@@ -124,20 +138,22 @@
                 }
             });
 
-            // 3. WebSocketでのリアルタイム更新 (必要に応じてゲーム名等を更新)
+            // 3. WebSocketでのリアルタイム更新
             const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
-                // サーバーから送られてくるデータのキー名に合わせて適宜変更してください
                 if (data.game_name || data.analog) {
                     const newGameName = data.game_name || data.analog || "何もしてない";
                     
-                    // ゲームが変更された時にチェックボックスをリセットする処理
+                    // ゲームが変更された時の処理
                     if (gameNameEl.textContent !== newGameName) {
                         gameNameEl.textContent = newGameName;
+                        
+                        // 表示・非表示を切り替え
+                        toggleMembersSection(newGameName);
                         
                         // すべてのチェックボックスのチェックを外す
                         document.querySelectorAll('input[name="member"]').forEach(cb => {
