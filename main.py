@@ -45,34 +45,27 @@ JST = timezone(timedelta(hours=9))
 # =========================
 # IP制限設定
 # =========================
-# アクセスを許可するIPアドレスのリスト
 ALLOWED_IPS = ["192.168.101.101", "202.15.17.104"]
 
 @app.middleware("http")
 async def ip_restriction_middleware(request: Request, call_next):
-    # ▼ 修正ポイント: フロントエンド関連のURLパスのみIP制限の対象にする
-    # 対象: ルートページ("/")、フロントエンド用API("/api/〜")、WebSocket("/ws")
     if request.url.path == "/" or request.url.path.startswith("/api/") or request.url.path == "/ws":
-        
-        # Nginxなどのリバースプロキシを経由している場合を考慮して X-Forwarded-For を確認
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
             client_ip = forwarded_for.split(",")[0].strip()
         else:
             client_ip = request.client.host if request.client else None
 
-        # 許可リストに含まれていない場合は 403 Forbidden を返す
         if client_ip not in ALLOWED_IPS:
             print(f"🚨 拒否されたIPからのアクセス: {client_ip} (Path: {request.url.path})")
             return Response(content="Access Denied", status_code=403)
     
-    # 対象外のパス（/analog, /digital, /events など）、または許可されたIPの場合はそのまま通す
     response = await call_next(request)
     return response
 
 
 # =========================
-# 状態管理 (ホストが全てを管理)
+# 状態管理
 # =========================
 
 class State:
@@ -89,7 +82,7 @@ class State:
         self.analog_members = []
         self.analog_updated_at = None
         
-        # inference status (ラズパイからの報告用)
+        # inference status
         self.inference_running = False
 
 state = State()
@@ -144,22 +137,17 @@ def send_log(event_id, event_time, status, members=None, room_users=None):
         return
 
     try:
-        # API仕様に合わせたJSON構造を作成
         log_data = {
             "event_id": str(event_id),
             "event_time": event_time,
             "status_id": int(status)
         }
         
-        # メンバー指定があれば participate_users として追加
         if members is not None:
-            # membersが文字列のリストになっている可能性を考慮し、API仕様(数値)に合わせる場合は適宜キャストが必要
-            # 例: [int(m) for m in members] 
             log_data["participate_users"] = [int(m) for m in members]
         else:
             log_data["participate_users"] = []
 
-        # room_users があれば追加 (今回は現状取得していないため空になる想定)
         if room_users is not None:
             log_data["room_users"] = [int(u) for u in room_users]
         else:
@@ -193,10 +181,15 @@ clients = []
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    # WebSocketの初期接続もHTTPミドルウェアを通過するため、IP制限が機能します。
     await ws.accept()
     clients.append(ws)
-    await ws.send_json({"analog": state.analog, "users": []})
+    # 初期接続時に selected_members も返す
+    await ws.send_json({
+        "analog": state.analog,
+        "analog_id": state.last_analog_id,
+        "selected_members": state.analog_members,
+        "users": []
+    })
 
     try:
         while True:
@@ -211,14 +204,19 @@ async def notify():
         try:
             loop = asyncio.get_event_loop()
             stayers = await loop.run_in_executor(None, get_stayers)
-            # 現在のステータスに設定されているメンバーIDの人のみ抽出して名前を渡す
             users = [s["name"] for s in stayers if s["id"] in state.analog_members]
         except Exception as e:
             print("stayers取得エラー:", e)
 
+    # 接続中のクライアントに最新の選択メンバーリストも含めて送信
     for ws in clients:
         try:
-            await ws.send_json({"analog": state.analog, "users": users})
+            await ws.send_json({
+                "analog": state.analog,
+                "analog_id": state.last_analog_id,
+                "selected_members": state.analog_members,
+                "users": users
+            })
         except Exception:
             pass
 
@@ -236,14 +234,14 @@ async def handle_analog_change(new_id, new_members):
     now = datetime.now(JST).isoformat()
     changed = False
 
+    # ゲームIDが変わった場合はメンバー選択を空リストに強制リセット
+    if new_id != state.last_analog_id:
+        new_members = []
+
     # ゲームIDが変わった か、メンバーが変わった場合
     if new_id != state.last_analog_id or new_members != state.analog_members:
-        
-        # ▼ 追加: ゲームが変わった場合はメンバーをリセットする
-        if new_id != state.last_analog_id:
-            new_members = []
 
-        # 古い状態の終了ログ
+        # 古い状態の終了ログ（旧メンバー情報を添えて送る）
         if state.last_analog_id != "0":
             send_log(state.last_analog_id, now, 2, members=state.analog_members)
 
@@ -297,7 +295,6 @@ async def api_post_members(request: Request):
     data = await request.json()
     members = data.get("members", [])
     
-    # メンバーが変わった場合、ログとSlackを自動処理
     await handle_analog_change(state.last_analog_id, members)
     return {"status": "ok", "selected_members": state.analog_members}
 

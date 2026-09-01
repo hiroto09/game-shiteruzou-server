@@ -22,7 +22,7 @@
             </div>
         </div>
 
-        <!-- メンバー選択エリア (何もしていない時は非表示にするために id を追加) -->
+        <!-- メンバー選択エリア -->
         <div id="members-section" class="hidden">
             <h2 class="text-lg font-semibold mb-4 text-gray-700 border-b pb-2">👥 参加メンバーの選択</h2>
             <form id="members-form">
@@ -43,13 +43,20 @@
             const membersListDiv = document.getElementById("members-list");
             const submitBtn = document.getElementById("submit-btn");
 
-            // メンバー選択エリアの表示/非表示を切り替える関数
+            // メンバー選択エリアの表示/非表示切り替え
             const toggleMembersSection = (gameName) => {
                 if (gameName === "何もしてない" || gameName === "ロード中..." || gameName === "データ取得エラー") {
                     membersSection.classList.add("hidden");
                 } else {
                     membersSection.classList.remove("hidden");
                 }
+            };
+
+            // 全チェックボックスのチェック状態を同期・リセットする関数
+            const updateCheckboxes = (selectedIds = []) => {
+                document.querySelectorAll('input[name="member"]').forEach(cb => {
+                    cb.checked = selectedIds.includes(cb.value) || selectedIds.includes(Number(cb.value));
+                });
             };
 
             // 1. 初期データの取得 (API呼び出し)
@@ -69,11 +76,10 @@
                 // --- ゲーム名の反映 ---
                 const initialGameName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
                 gameNameEl.textContent = initialGameName;
-                
-                // ゲーム名に応じてメンバー選択エリアの表示を切り替え
                 toggleMembersSection(initialGameName);
 
                 // --- メンバーチェックボックスの生成 ---
+                membersListDiv.innerHTML = "";
                 membersData.members.forEach(member => {
                     const label = document.createElement("label");
                     label.className = "flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-indigo-50 transition bg-white";
@@ -148,17 +154,18 @@
                 if (data.game_name || data.analog) {
                     const newGameName = data.game_name || data.analog || "何もしてない";
                     
-                    // ゲームが変更された時の処理
+                    // ゲームが変更された場合
                     if (gameNameEl.textContent !== newGameName) {
                         gameNameEl.textContent = newGameName;
-                        
-                        // 表示・非表示を切り替え
                         toggleMembersSection(newGameName);
-                        
-                        // すべてのチェックボックスのチェックを外す
-                        document.querySelectorAll('input[name="member"]').forEach(cb => {
-                            cb.checked = false;
-                        });
+                    }
+
+                    // サーバーから渡された選択中メンバー情報で画面のチェックボックス状態を同期
+                    // (ゲーム切り替え直後はサーバー側で selected_members が [] になっているため、自動的に全解除されます)
+                    if (Array.isArray(data.selected_members)) {
+                        updateCheckboxes(data.selected_members);
+                    } else if (newGameName === "何もしてない") {
+                        updateCheckboxes([]);
                     }
                 }
             };
