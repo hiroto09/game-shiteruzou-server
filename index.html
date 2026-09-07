@@ -30,7 +30,7 @@
                     <!-- JavaScriptで動的にチェックボックスが生成されます -->
                 </div>
                 <button type="submit" id="submit-btn" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
-                    メンバー情報を更新する
+                    メンバー情報登録する
                 </button>
             </form>
         </div>
@@ -112,7 +112,7 @@
             document.getElementById("members-form").addEventListener("submit", async (e) => {
                 e.preventDefault();
                 const originalText = submitBtn.textContent;
-                submitBtn.textContent = "更新中...";
+                submitBtn.textContent = "登録中...";
                 submitBtn.disabled = true;
                 submitBtn.classList.replace("bg-indigo-500", "bg-indigo-300");
 
@@ -125,9 +125,9 @@
                         body: JSON.stringify({ members: checkedIds })
                     });
                     
-                    if (!res.ok) throw new Error("更新失敗");
+                    if (!res.ok) throw new Error("登録失敗");
                     
-                    submitBtn.textContent = "更新完了！";
+                    submitBtn.textContent = "登録完了！";
                     submitBtn.classList.replace("bg-indigo-300", "bg-emerald-500");
                     
                     setTimeout(() => {
@@ -137,7 +137,7 @@
                     }, 1500);
                 } catch (err) {
                     console.error(err);
-                    alert("更新に失敗しました。");
+                    alert("登録に失敗しました。");
                     submitBtn.textContent = originalText;
                     submitBtn.disabled = false;
                     submitBtn.classList.replace("bg-indigo-300", "bg-indigo-500");
