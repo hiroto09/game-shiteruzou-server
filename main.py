@@ -226,18 +226,7 @@ async def notify():
 # =========================
 
 async def handle_analog_change(new_id, new_members):
-    new_id = str(new_id)
-    if new_id not in GAME_MAP:
-        new_id = "0"
-
-    new_name = GAME_MAP.get(new_id, "何もしてない")
-    now = datetime.now(JST).isoformat()
-    changed = False
-
-    # ゲームIDが変わった場合はメンバー選択を空リストに強制リセット
-    if new_id != state.last_analog_id:
-        new_members = []
-
+    # 〜〜中略〜〜
     # ゲームIDが変わった か、メンバーが変わった場合
     if new_id != state.last_analog_id or new_members != state.analog_members:
 
@@ -255,6 +244,9 @@ async def handle_analog_change(new_id, new_members):
         state.analog_members = new_members
         state.analog_updated_at = now
         changed = True
+        
+        # 👇👇👇 ここに Slack 送信処理を追加する 👇👇👇
+        send_slack()
 
     if changed:
         await notify()
