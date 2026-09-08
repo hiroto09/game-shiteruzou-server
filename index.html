@@ -54,6 +54,8 @@
 
             // 全チェックボックスのチェック状態を同期・リセットする関数
             const updateCheckboxes = (selectedIds = []) => {
+                // ユーザーが現在操作している最中（フォーム送信待ちなど）は上書きしない配慮があれば尚良しですが、
+                // 今回はサーバーの最新状態を強制同期します。
                 document.querySelectorAll('input[name="member"]').forEach(cb => {
                     cb.checked = selectedIds.includes(cb.value) || selectedIds.includes(Number(cb.value));
                 });
@@ -154,14 +156,11 @@
                 if (data.game_name || data.analog) {
                     const newGameName = data.game_name || data.analog || "何もしてない";
                     
-                    // ゲームが変更された場合
                     if (gameNameEl.textContent !== newGameName) {
                         gameNameEl.textContent = newGameName;
                         toggleMembersSection(newGameName);
                     }
 
-                    // サーバーから渡された選択中メンバー情報で画面のチェックボックス状態を同期
-                    // (ゲーム切り替え直後はサーバー側で selected_members が [] になっているため、自動的に全解除されます)
                     if (Array.isArray(data.selected_members)) {
                         updateCheckboxes(data.selected_members);
                     } else if (newGameName === "何もしてない") {
@@ -171,8 +170,38 @@
             };
 
             ws.onclose = () => {
-                console.warn("WebSocketが切断されました。");
+                console.warn("WebSocketが切断されました。バックグラウンド取得でカバーします。");
             };
+
+            // 4. 定期的にステータスを取得（5秒間隔）
+            const fetchAndUpdateStatus = async () => {
+                try {
+                    const res = await fetch("/api/status");
+                    if (!res.ok) return;
+                    
+                    const statusData = await res.json();
+                    const currentName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
+                    
+                    // 画面の表示名とサーバーのデータが違う場合のみ更新
+                    if (gameNameEl.textContent !== currentName) {
+                        gameNameEl.textContent = currentName;
+                        toggleMembersSection(currentName);
+                    }
+
+                    // WebSocketが切れていても、メンバーの最新状態を同期
+                    if (Array.isArray(statusData.selected_members)) {
+                        updateCheckboxes(statusData.selected_members);
+                    } else if (currentName === "何もしてない") {
+                        updateCheckboxes([]);
+                    }
+
+                } catch (err) {
+                    console.error("定期データ取得エラー:", err);
+                }
+            };
+
+            // 5000ミリ秒（5秒）ごとにfetchAndUpdateStatusを実行
+            setInterval(fetchAndUpdateStatus, 5000);
         });
     </script>
 </body>
