@@ -8,6 +8,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./saved_images:/app/saved_images
     depends_on:
       - db
     restart: always

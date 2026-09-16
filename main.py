@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Response
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Response, File, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from datetime import datetime, timezone, timedelta
 import os
@@ -10,7 +10,7 @@ import requests
 load_dotenv()
 
 # =========================
-# 定数
+# 定数・ディレクトリ作成
 # =========================
 
 CHANNEL = "#prj_game_shiteruzo"
@@ -20,10 +20,16 @@ STAYWATCH_API_URL = os.getenv("STAYWATCH_API_URL")
 STAYWATCH_API_KEY = os.getenv("STAYWATCH_API_KEY")
 EVENTS_API_URL = os.getenv("EVENTS_API_URL")
 
+IMAGE_SAVE_DIR = "saved_images"
+DIGITAL_IMAGE_DIR = os.path.join(IMAGE_SAVE_DIR, "digital")
+ANALOG_IMAGE_DIR = os.path.join(IMAGE_SAVE_DIR, "analog")
+
+os.makedirs(DIGITAL_IMAGE_DIR, exist_ok=True)
+os.makedirs(ANALOG_IMAGE_DIR, exist_ok=True)
+
 slack_client = WebClient(
     token=os.environ.get("SLACK_BOT_TOKEN")
 )
-
 
 # =========================
 # ゲームマップ
@@ -32,7 +38,6 @@ slack_client = WebClient(
 GAME_MAP = {
     "0": "何もしてない"
 }
-
 
 # =========================
 # FastAPI
@@ -63,7 +68,6 @@ async def ip_restriction_middleware(request: Request, call_next):
     response = await call_next(request)
     return response
 
-
 # =========================
 # 状態管理
 # =========================
@@ -86,7 +90,6 @@ class State:
         self.inference_running = False
 
 state = State()
-
 
 # =========================
 # 初期化・API連携
@@ -127,7 +130,6 @@ def get_stayers():
         print("🔥 staywatch APIエラー:", e)
     return []
 
-
 # =========================
 # ログ送信・Slack送信
 # =========================
@@ -158,7 +160,6 @@ def send_log(event_id, event_time, status, members=None, room_users=None):
     except Exception as e:
         print("ログ送信エラー:", e)
         
-        
 def send_slack():
     try:
         slack_client.chat_postMessage(
@@ -172,7 +173,6 @@ def send_slack():
     except Exception as e:
         print("❌ Slackエラー:", e)
 
-
 # =========================
 # WebSocket
 # =========================
@@ -183,7 +183,6 @@ clients = []
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.append(ws)
-    # 初期接続時に selected_members も返す
     await ws.send_json({
         "analog": state.analog,
         "analog_id": state.last_analog_id,
@@ -208,7 +207,6 @@ async def notify():
         except Exception as e:
             print("stayers取得エラー:", e)
 
-    # 接続中のクライアントに最新の選択メンバーリストも含めて送信
     for ws in clients:
         try:
             await ws.send_json({
@@ -220,7 +218,6 @@ async def notify():
         except Exception:
             pass
 
-
 # =========================
 # アナログ状態統合変更処理
 # =========================
@@ -231,40 +228,30 @@ async def handle_analog_change(new_id, new_members):
         new_id = "0"
 
     new_name = GAME_MAP.get(new_id, "何もしてない")
-    
-    # 🌟 エラーの原因：この行が消えていた（現在時刻の取得）
     now = datetime.now(JST).isoformat()
-    
     changed = False
 
-    # ゲームIDが変わった場合はメンバー選択を空リストに強制リセット
     if new_id != state.last_analog_id:
         new_members = []
 
-    # ゲームIDが変わった か、メンバーが変わった場合
     if new_id != state.last_analog_id or new_members != state.analog_members:
 
-        # 古い状態の終了ログ（旧メンバー情報を添えて送る）
         if state.last_analog_id != "0":
             send_log(state.last_analog_id, now, 2, members=state.analog_members)
 
-        # 新しい状態の開始ログ
         if new_id != "0":
             send_log(new_id, now, 1, members=new_members)
 
-        # 状態更新
         state.last_analog_id = new_id
         state.analog = new_name
         state.analog_members = new_members
         state.analog_updated_at = now
         changed = True
         
-        # Slackへの通知
         send_slack()
 
     if changed:
         await notify()
-
 
 # =========================
 # フロントエンド用エンドポイント
@@ -304,37 +291,82 @@ async def api_post_members(request: Request):
     await handle_analog_change(state.last_analog_id, members)
     return {"status": "ok", "selected_members": state.analog_members}
 
-
 # =========================
 # ラズパイ受信 (API /analog)
 # =========================
 
 @app.post("/analog")
-async def analog_endpoint(request: Request):
-    data = await request.json()
+async def analog_endpoint(
+    request: Request,
+    analog_id: str = Form(None),
+    inference_running: bool = Form(None),
+    image: UploadFile = File(None)
+):
+    content_type = request.headers.get("content-type", "")
+    
+    # JSONとForm Dataの両対応
+    if "application/json" in content_type:
+        data = await request.json()
+        recv_analog_id = data.get("analog_id")
+        recv_inference_running = data.get("inference_running")
+    else:
+        recv_analog_id = analog_id
+        recv_inference_running = inference_running
 
-    if "inference_running" in data:
-        state.inference_running = data["inference_running"]
+    if recv_inference_running is not None:
+        state.inference_running = recv_inference_running
 
-    if "analog_id" in data:
-        print(f"🃏 Raspi -> Analog ID: {data['analog_id']}")
-        await handle_analog_change(data["analog_id"], state.analog_members)
+    if recv_analog_id is not None:
+        analog_id_str = str(recv_analog_id)
+        print(f"🃏 Raspi -> Analog ID: {analog_id_str}")
+
+        # 画像添付がある場合の保存処理
+        if image is not None:
+            filename = image.filename if image.filename else f"{analog_id_str}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
+            save_path = os.path.join(ANALOG_IMAGE_DIR, filename)
+            contents = await image.read()
+            with open(save_path, "wb") as f:
+                f.write(contents)
+            print(f"📸 Analog画像を保存しました: {save_path}")
+
+        await handle_analog_change(analog_id_str, state.analog_members)
 
     return {"status": "ok"}
-
 
 # =========================
 # 外部受信 (API /digital, /events)
 # =========================
 
 @app.post("/digital")
-async def result(request: Request):
-    data = await request.json()
-    try:
-        game_id = str(int(data["class_id"]))
-        now = datetime.now(JST).isoformat()
-    except Exception:
-        raise HTTPException(422, "Invalid JSON")
+async def result(
+    request: Request,
+    class_id: str = Form(None),
+    image: UploadFile = File(None)
+):
+    content_type = request.headers.get("content-type", "")
+    
+    # JSONとForm Dataの両対応
+    if "application/json" in content_type:
+        data = await request.json()
+        try:
+            game_id = str(int(data["class_id"]))
+        except Exception:
+            raise HTTPException(422, "Invalid JSON")
+    else:
+        if class_id is None:
+            raise HTTPException(422, "Missing class_id")
+        game_id = str(int(class_id))
+
+    now = datetime.now(JST).isoformat()
+
+    # 画像添付がある場合の保存処理
+    if image is not None:
+        filename = image.filename if image.filename else f"{game_id}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
+        save_path = os.path.join(DIGITAL_IMAGE_DIR, filename)
+        contents = await image.read()
+        with open(save_path, "wb") as f:
+            f.write(contents)
+        print(f"📸 Digital画像を保存しました: {save_path}")
 
     new_digital = GAME_MAP.get(game_id, "不明")
 
