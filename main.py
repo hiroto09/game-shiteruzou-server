@@ -231,25 +231,33 @@ async def handle_analog_change(new_id, new_members):
     now = datetime.now(JST).isoformat()
     changed = False
 
-    if new_id != state.last_analog_id:
+    # ゲームID自体が変化したかどうか
+    game_changed = (new_id != state.last_analog_id)
+
+    if game_changed:
         new_members = []
 
-    if new_id != state.last_analog_id or new_members != state.analog_members:
+    # ゲームIDの変更、またはメンバー情報に変更があった場合
+    if game_changed or new_members != state.analog_members:
 
-        if state.last_analog_id != "0":
-            send_log(state.last_analog_id, now, 2, members=state.analog_members)
+        # 💡 ゲームの状態が変化した場合のみ、ログ送信とSlack通知を行う
+        if game_changed:
+            if state.last_analog_id != "0":
+                send_log(state.last_analog_id, now, 2, members=state.analog_members)
 
-        if new_id != "0":
-            send_log(new_id, now, 1, members=new_members)
+            if new_id != "0":
+                send_log(new_id, now, 1, members=new_members)
 
-        state.last_analog_id = new_id
-        state.analog = new_name
+            state.last_analog_id = new_id
+            state.analog = new_name
+            send_slack()
+
+        # メンバー情報およびタイムスタンプの更新（ログ/Slack送信は行わない）
         state.analog_members = new_members
         state.analog_updated_at = now
         changed = True
-        
-        send_slack()
 
+    # Web画面へのリアルタイム反映（WebSocket）は変更があれば常に送信
     if changed:
         await notify()
 
