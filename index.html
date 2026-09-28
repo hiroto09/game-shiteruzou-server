@@ -43,26 +43,39 @@
             const membersListDiv = document.getElementById("members-list");
             const submitBtn = document.getElementById("submit-btn");
 
-            // 状態管理変数
-            let isRegistered = false;  // すでに登録済みかどうか
+            // --- 状態管理 ---
+            let isRegistered = false;  // サーバーに登録済みか
             let currentGame = "";      // 現在のゲーム名
             let isSubmitting = false;  // 送信処理中フラグ
+            let isEditing = false;     // ★ユーザーがチェック操作中で未送信か
+            
+            let memberCache = new Map(); // ★メンバー情報のキャッシュ (ID -> MemberObject)
+            let displayedMembersSignature = ""; // 表示中のメンバーリストの差分検知用
 
-            // ボタン文言の更新関数
+            // --- UI操作関数 ---
             const updateSubmitButtonText = () => {
-                if (isSubmitting) return; // 送信中・完了表示中は書き換えない
-                if (isRegistered) {
+                if (isSubmitting) return;
+                
+                if (isEditing) {
+                    submitBtn.textContent = "変更を保存する"; // 未送信の変更がある場合
+                    submitBtn.classList.replace("bg-indigo-500", "bg-orange-500");
+                    submitBtn.classList.replace("hover:bg-indigo-600", "hover:bg-orange-600");
+                } else if (isRegistered) {
                     submitBtn.textContent = "メンバー情報を更新する";
+                    submitBtn.classList.replace("bg-orange-500", "bg-indigo-500");
+                    submitBtn.classList.replace("hover:bg-orange-600", "hover:bg-indigo-600");
                 } else {
                     submitBtn.textContent = "メンバー情報登録する";
+                    submitBtn.classList.replace("bg-orange-500", "bg-indigo-500");
+                    submitBtn.classList.replace("hover:bg-orange-600", "hover:bg-indigo-600");
                 }
             };
 
-            // メンバー選択エリアの表示/非表示およびゲーム変更時リセット切り替え
             const handleGameChange = (newGameName) => {
                 if (currentGame !== newGameName) {
                     currentGame = newGameName;
-                    isRegistered = false; // ゲームが変わったら登録状態をリセット
+                    isRegistered = false;
+                    isEditing = false; // ゲームが変わったら編集状態をリセット
                 }
 
                 if (newGameName === "何もしてない" || newGameName === "ロード中..." || newGameName === "データ取得エラー") {
@@ -73,47 +86,16 @@
                 updateSubmitButtonText();
             };
 
-            // 全チェックボックスのチェック状態を同期する関数（選択状態は維持されます）
-            const updateCheckboxes = (selectedIds = []) => {
-                document.querySelectorAll('input[name="member"]').forEach(cb => {
-                    cb.checked = selectedIds.includes(cb.value) || selectedIds.includes(Number(cb.value));
-                });
-                
-                // すでにサーバー側に選択メンバーが存在していれば登録済み扱いにする
-                if (selectedIds.length > 0) {
-                    isRegistered = true;
-                    updateSubmitButtonText();
-                }
+            // 現在UIでチェックが入っているIDの配列を取得
+            const getCheckedIds = () => {
+                return Array.from(document.querySelectorAll('input[name="member"]:checked')).map(cb => String(cb.value));
             };
 
-            // 1. 初期データの取得 (API呼び出し)
-            try {
-                const [statusRes, membersRes] = await Promise.all([
-                    fetch("/api/status"),
-                    fetch("/api/members")
-                ]);
-                
-                if (!statusRes.ok || !membersRes.ok) {
-                    throw new Error("アクセスが拒否されたか、サーバーエラーが発生しました。");
-                }
-                
-                const statusData = await statusRes.json();
-                const membersData = await membersRes.json();
-
-                // --- ゲーム名の反映 ---
-                const initialGameName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
-                gameNameEl.textContent = initialGameName;
-                handleGameChange(initialGameName);
-
-                // --- メンバーチェックボックスの生成 ---
+            // メンバーリストのDOMを生成・描画
+            const renderMembersList = (membersToDisplay, checkedIdsToApply) => {
                 membersListDiv.innerHTML = "";
-                const selectedMembers = statusData.selected_members || [];
                 
-                if (selectedMembers.length > 0) {
-                    isRegistered = true;
-                }
-
-                membersData.members.forEach(member => {
+                membersToDisplay.forEach(member => {
                     const label = document.createElement("label");
                     label.className = "flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-indigo-50 transition bg-white";
                     
@@ -123,9 +105,16 @@
                     checkbox.value = member.id;
                     checkbox.className = "form-checkbox h-5 w-5 text-indigo-600 rounded focus:ring-indigo-500";
                     
-                    if (selectedMembers.includes(member.id) || selectedMembers.includes(Number(member.id))) {
+                    // 指定されたIDにチェックを入れる
+                    if (checkedIdsToApply.includes(String(member.id))) {
                         checkbox.checked = true;
                     }
+
+                    // ★ユーザーが操作した瞬間に「編集中」フラグを立てる（自動上書き防止）
+                    checkbox.addEventListener("change", () => {
+                        isEditing = true;
+                        updateSubmitButtonText();
+                    });
                     
                     const span = document.createElement("span");
                     span.className = "font-medium text-gray-700";
@@ -135,24 +124,99 @@
                     label.appendChild(span);
                     membersListDiv.appendChild(label);
                 });
+            };
 
+            // 既存のチェックボックスのチェック状態だけを更新（DOMの再構築なし）
+            const updateCheckboxes = (selectedIds = []) => {
+                const stringIds = selectedIds.map(String);
+                document.querySelectorAll('input[name="member"]').forEach(cb => {
+                    cb.checked = stringIds.includes(String(cb.value));
+                });
+                
+                isRegistered = stringIds.length > 0;
                 updateSubmitButtonText();
-            } catch (err) {
-                console.error("APIの取得に失敗しました:", err);
-                gameNameEl.textContent = "データ取得エラー";
-                handleGameChange("データ取得エラー");
-            }
+            };
 
-            // 2. メンバー情報送信時の処理
+            // ★サーバーのメンバーリストと、現在のチェック状態を統合して描画
+            const processMembersData = (serverMembers) => {
+                // キャッシュを更新
+                serverMembers.forEach(m => memberCache.set(String(m.id), m));
+
+                let displayMembers = [...serverMembers];
+                const displayIds = new Set(displayMembers.map(m => String(m.id)));
+
+                // 現在チェックされているメンバーのIDを取得
+                const currentCheckedIds = getCheckedIds();
+                
+                // ★削除されたメンバー対策: チェック済みなのにサーバーリストに無い場合、キャッシュから復元して表示に追加
+                currentCheckedIds.forEach(id => {
+                    if (!displayIds.has(id) && memberCache.has(id)) {
+                        displayMembers.push(memberCache.get(id));
+                        displayIds.add(id);
+                    }
+                });
+
+                // ID順に並び替え
+                displayMembers.sort((a, b) => Number(a.id) - Number(b.id));
+
+                // メンバーの構成（増減や名前変更）が変わった場合のみDOMを再構築（チラつき防止）
+                const newSignature = displayMembers.map(m => `${m.id}:${m.name}`).join(",");
+                if (displayedMembersSignature !== newSignature) {
+                    renderMembersList(displayMembers, currentCheckedIds);
+                    displayedMembersSignature = newSignature;
+                }
+            };
+
+            // --- 1. 初期データの取得 ---
+            const initialize = async () => {
+                try {
+                    const [statusRes, membersRes] = await Promise.all([
+                        fetch("/api/status"),
+                        fetch("/api/members")
+                    ]);
+                    
+                    if (!statusRes.ok || !membersRes.ok) throw new Error("APIエラー");
+                    
+                    const statusData = await statusRes.json();
+                    const membersData = await membersRes.json();
+
+                    // 初回のみ：サーバーの選択状態を初期値としてレンダリングに渡す
+                    const initialSelected = (statusData.selected_members || []).map(String);
+                    
+                    membersData.members.forEach(m => memberCache.set(String(m.id), m));
+                    let displayMembers = [...membersData.members];
+                    displayMembers.sort((a, b) => Number(a.id) - Number(b.id));
+                    
+                    displayedMembersSignature = displayMembers.map(m => `${m.id}:${m.name}`).join(",");
+                    renderMembersList(displayMembers, initialSelected);
+                    
+                    if (initialSelected.length > 0) isRegistered = true;
+
+                    const initialGameName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
+                    gameNameEl.textContent = initialGameName;
+                    handleGameChange(initialGameName);
+
+                } catch (err) {
+                    console.error("初期化エラー:", err);
+                    gameNameEl.textContent = "データ取得エラー";
+                    handleGameChange("データ取得エラー");
+                }
+            };
+
+            await initialize();
+
+            // --- 2. メンバー情報送信時の処理 ---
             document.getElementById("members-form").addEventListener("submit", async (e) => {
                 e.preventDefault();
                 isSubmitting = true;
 
                 submitBtn.textContent = "処理中...";
                 submitBtn.disabled = true;
-                submitBtn.classList.replace("bg-indigo-500", "bg-indigo-300");
+                
+                // 元の色がindigoかorangeかに関わらず無効化色に
+                submitBtn.className = "w-full bg-gray-400 text-white font-bold py-3 px-4 rounded-lg shadow-md cursor-not-allowed";
 
-                const checkedIds = Array.from(document.querySelectorAll('input[name="member"]:checked')).map(cb => cb.value);
+                const checkedIds = getCheckedIds();
                 
                 try {
                     const res = await fetch("/api/members", {
@@ -164,28 +228,28 @@
                     if (!res.ok) throw new Error("登録失敗");
                     
                     submitBtn.textContent = "完了！";
-                    submitBtn.classList.replace("bg-indigo-300", "bg-emerald-500");
+                    submitBtn.className = "w-full bg-emerald-500 text-white font-bold py-3 px-4 rounded-lg shadow-md";
                     
-                    // 1度登録・送信に成功したので登録済みフラグをtrueにする
                     isRegistered = true;
+                    isEditing = false; // ★送信完了したので編集状態を解除
                     
                     setTimeout(() => {
                         isSubmitting = false;
                         submitBtn.disabled = false;
-                        submitBtn.classList.replace("bg-emerald-500", "bg-indigo-500");
-                        updateSubmitButtonText(); // 「更新する」にテキスト切り替え
+                        submitBtn.className = "w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md";
+                        updateSubmitButtonText();
                     }, 1500);
                 } catch (err) {
                     console.error(err);
                     alert("処理に失敗しました。");
                     isSubmitting = false;
                     submitBtn.disabled = false;
-                    submitBtn.classList.replace("bg-indigo-300", "bg-indigo-500");
+                    submitBtn.className = "w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md";
                     updateSubmitButtonText();
                 }
             });
 
-            // 3. WebSocketでのリアルタイム更新
+            // --- 3. WebSocketでのリアルタイム更新 ---
             const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
             
@@ -200,36 +264,52 @@
                         handleGameChange(newGameName);
                     }
 
-                    if (Array.isArray(data.selected_members)) {
-                        updateCheckboxes(data.selected_members);
-                    } else if (newGameName === "何もしてない") {
-                        updateCheckboxes([]);
+                    // ★ユーザーが編集中でない場合のみ、サーバー側からチェック状態を強制上書き
+                    if (!isEditing) {
+                        if (Array.isArray(data.selected_members)) {
+                            updateCheckboxes(data.selected_members);
+                        } else if (newGameName === "何もしてない") {
+                            updateCheckboxes([]);
+                        }
                     }
                 }
             };
 
             ws.onclose = () => {
-                console.warn("WebSocketが切断されました。バックグラウンド取得でカバーします。");
+                console.warn("WebSocket切断");
             };
 
-            // 4. 定期的にステータスを取得（5秒間隔）
-            const fetchAndUpdateStatus = async () => {
+            // --- 4. 定期的にステータス・メンバー情報を取得（5秒間隔） ---
+            const fetchAndUpdate = async () => {
                 try {
-                    const res = await fetch("/api/status");
-                    if (!res.ok) return;
+                    // ★メンバー情報も一緒に定期取得する
+                    const [statusRes, membersRes] = await Promise.all([
+                        fetch("/api/status"),
+                        fetch("/api/members")
+                    ]);
                     
-                    const statusData = await res.json();
+                    if (!statusRes.ok || !membersRes.ok) return;
+                    
+                    const statusData = await statusRes.json();
+                    const membersData = await membersRes.json();
+
+                    // メンバー情報の統合と描画（増減対応・再描画）
+                    processMembersData(membersData.members);
+
+                    // ゲーム名の反映
                     const currentName = statusData.confirmed?.game_name || statusData.game_name || "何もしてない";
-                    
                     if (gameNameEl.textContent !== currentName) {
                         gameNameEl.textContent = currentName;
                         handleGameChange(currentName);
                     }
 
-                    if (Array.isArray(statusData.selected_members)) {
-                        updateCheckboxes(statusData.selected_members);
-                    } else if (currentName === "何もしてない") {
-                        updateCheckboxes([]);
+                    // ★ユーザーが編集中でない場合のみ、チェック状態を上書き
+                    if (!isEditing) {
+                        if (Array.isArray(statusData.selected_members)) {
+                            updateCheckboxes(statusData.selected_members);
+                        } else if (currentName === "何もしてない") {
+                            updateCheckboxes([]);
+                        }
                     }
 
                 } catch (err) {
@@ -237,7 +317,7 @@
                 }
             };
 
-            setInterval(fetchAndUpdateStatus, 5000);
+            setInterval(fetchAndUpdate, 5000);
         });
     </script>
 </body>
