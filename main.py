@@ -35,9 +35,8 @@ slack_client = WebClient(
 # ゲームマップ
 # =========================
 
-GAME_MAP = {
-    "0": "何もしてない"
-}
+GAME_MAP = {"0": "何もしてない"}
+ANALOG_GAME_MAP = {"0": "何もしてない"}  # アナログゲーム専用マップ（セレクター用）
 
 # =========================
 # FastAPI
@@ -89,7 +88,7 @@ class State:
         # inference status
         self.inference_running = False
 
-        # 手動モードフラグ (True: 手動固定中, False: VLM自動更新)
+        # 手動モードフラグ (アナログのみ適用)
         self.is_manual_mode = False
 
 state = State()
@@ -99,7 +98,7 @@ state = State()
 # =========================
 
 def update_game_map():
-    global GAME_MAP
+    global GAME_MAP, ANALOG_GAME_MAP
     try:
         print("🎮 ゲーム一覧をAPIから取得します")
         response = requests.get(EVENTS_API_URL, timeout=10)
@@ -107,12 +106,22 @@ def update_game_map():
 
         games = response.json()["data"]
         new_game_map = {"0": "何もしてない"}
+        new_analog_map = {"0": "何もしてない"}
 
         for game in games:
-            new_game_map[str(game["ID"])] = game["Name"]
+            game_id = str(game["ID"])
+            game_name = game["Name"]
+            new_game_map[game_id] = game_name
+            
+            # APIのレスポンスに Type 等の識別キーがある場合は条件判定
+            # 例: game.get("Type") == "analog" や "Analog" キーなど
+            # 区分キーが無い・不明な場合は Type フィールドの有無で分岐調整してください
+            if game.get("Type") == "analog" or game.get("Category") == "analog" or "Type" not in game:
+                new_analog_map[game_id] = game_name
 
         GAME_MAP = new_game_map
-        print("✅ ゲーム一覧を更新しました")
+        ANALOG_GAME_MAP = new_analog_map
+        print("✅ ゲーム一覧を更新しました（アナログ用件数:", len(ANALOG_GAME_MAP) - 1, "）")
     except Exception as e:
         print("❌ ゲーム一覧取得エラー:", e)
 
@@ -191,7 +200,7 @@ async def websocket_endpoint(ws: WebSocket):
         "analog_id": state.last_analog_id,
         "selected_members": state.analog_members,
         "is_manual_mode": state.is_manual_mode,
-        "game_map": GAME_MAP,
+        "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
         "users": []
     })
 
@@ -219,7 +228,7 @@ async def notify():
                 "analog_id": state.last_analog_id,
                 "selected_members": state.analog_members,
                 "is_manual_mode": state.is_manual_mode,
-                "game_map": GAME_MAP,
+                "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
                 "users": users
             })
         except Exception:
@@ -238,16 +247,13 @@ async def handle_analog_change(new_id, new_members):
     now = datetime.now(JST).isoformat()
     changed = False
 
-    # ゲームID自体が変化したかどうか
     game_changed = (new_id != state.last_analog_id)
 
     if game_changed:
         new_members = []
 
-    # ゲームIDの変更、またはメンバー情報に変更があった場合
     if game_changed or new_members != state.analog_members:
 
-        # ゲームの状態が変化した場合のみ、ログ送信とSlack通知を行う
         if game_changed:
             if state.last_analog_id != "0":
                 send_log(state.last_analog_id, now, 2, members=state.analog_members)
@@ -259,12 +265,10 @@ async def handle_analog_change(new_id, new_members):
             state.analog = new_name
             send_slack()
 
-        # メンバー情報およびタイムスタンプの更新
         state.analog_members = new_members
         state.analog_updated_at = now
         changed = True
 
-    # Web画面へのリアルタイム反映（WebSocket）
     if changed:
         await notify()
 
@@ -291,7 +295,7 @@ async def api_status():
         "selected_members": state.analog_members,
         "inference_running": state.inference_running,
         "is_manual_mode": state.is_manual_mode,
-        "game_map": GAME_MAP
+        "analog_game_map": ANALOG_GAME_MAP  # アナログゲームのみ配信
     }
 
 @app.get("/api/members")
@@ -308,21 +312,19 @@ async def api_post_members(request: Request):
     await handle_analog_change(state.last_analog_id, members)
     return {"status": "ok", "selected_members": state.analog_members}
 
-# 🛠️ 手動でゲーム変更を登録・更新するAPI
+# 🛠️ アナログゲーム専用の手動登録・更新API
 @app.post("/api/manual_update")
 async def api_manual_update(request: Request):
     data = await request.json()
     analog_id = str(data.get("analog_id", "0"))
 
-    # 手動モードを有効化
     state.is_manual_mode = True
     
-    # 変更を反映
     await handle_analog_change(analog_id, state.analog_members)
     await notify()
     return {"status": "ok", "is_manual_mode": state.is_manual_mode, "analog_id": state.last_analog_id}
 
-# 🔄 手動モードを解除して自動推定（VLM）に戻すAPI
+# 🔄 手動モード解除API
 @app.post("/api/resume_auto")
 async def api_resume_auto():
     state.is_manual_mode = False
@@ -342,7 +344,6 @@ async def analog_endpoint(
 ):
     content_type = request.headers.get("content-type", "")
     
-    # JSONとForm Dataの両対応
     if "application/json" in content_type:
         data = await request.json()
         recv_analog_id = data.get("analog_id")
@@ -357,7 +358,6 @@ async def analog_endpoint(
     if recv_analog_id is not None:
         analog_id_str = str(recv_analog_id)
         
-        # 画像添付がある場合の保存処理
         if image is not None:
             filename = image.filename if image.filename else f"{analog_id_str}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
             save_path = os.path.join(ANALOG_IMAGE_DIR, filename)
@@ -366,7 +366,7 @@ async def analog_endpoint(
                 f.write(contents)
             print(f"📸 Analog画像を保存しました: {save_path}")
 
-        # ⚠️ 手動モード中でない場合のみ、VLMからの推定結果を更新
+        # 手動モードでない場合のみ自動更新を行う
         if not state.is_manual_mode:
             print(f"🃏 Raspi -> Analog ID (自動適用): {analog_id_str}")
             await handle_analog_change(analog_id_str, state.analog_members)
@@ -391,7 +391,6 @@ async def result(
 ):
     content_type = request.headers.get("content-type", "")
     
-    # JSONとForm Dataの両対応
     if "application/json" in content_type:
         data = await request.json()
         try:
@@ -405,7 +404,6 @@ async def result(
 
     now = datetime.now(JST).isoformat()
 
-    # 画像添付がある場合の保存処理
     if image is not None:
         filename = image.filename if image.filename else f"{game_id}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
         save_path = os.path.join(DIGITAL_IMAGE_DIR, filename)

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ゲーム状況モニター・手動設定</title>
+    <title>アナログゲーム状況・手動設定</title>
     <style>
         body { font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; }
         .card { max-width: 600px; margin: 0 auto 20px auto; background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
@@ -44,7 +44,7 @@
     </div>
 
     <div>
-        <h3>手動オーバーライド</h3>
+        <h3>アナログゲーム手動修正</h3>
         <p style="font-size: 0.85rem; color: #666; margin-top: -5px;">
             VLMの誤認識時に手動で変更・登録できます。
         </p>
@@ -69,24 +69,22 @@
 </div>
 
 <script>
-    let currentGameMap = {};
+    let currentAnalogMap = {};
     let selectedMembers = [];
     let isManualMode = false;
 
-    // 初回データ取得
     async function init() {
         await fetchStatus();
         await fetchMembers();
         connectWebSocket();
     }
 
-    // ステータス取得
     async function fetchStatus() {
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
             
-            currentGameMap = data.game_map || {};
+            currentAnalogMap = data.analog_game_map || {};
             isManualMode = data.is_manual_mode;
             
             updateSelectorOptions(data.confirmed.analog_id);
@@ -97,12 +95,12 @@
         }
     }
 
-    // ゲームセレクターの選択肢を動的に生成
+    // アナログゲームのみをセレクターにセット
     function updateSelectorOptions(selectedId) {
         const selector = document.getElementById('game-selector');
         selector.innerHTML = '';
         
-        for (const [id, name] of Object.entries(currentGameMap)) {
+        for (const [id, name] of Object.entries(currentAnalogMap)) {
             const opt = document.createElement('option');
             opt.value = id;
             opt.textContent = name;
@@ -113,7 +111,6 @@
         }
     }
 
-    // 画面上のモード表示を更新
     function renderStatus(gameName, manualFlag) {
         document.getElementById('game-name').innerText = gameName;
         const badge = document.getElementById('mode-badge');
@@ -130,7 +127,6 @@
         }
     }
 
-    // 手動変更POST
     async function setManualGame() {
         const analogId = document.getElementById('game-selector').value;
         await fetch('/api/manual_update', {
@@ -140,12 +136,10 @@
         });
     }
 
-    // 手動モード解除POST
     async function resumeAutoMode() {
         await fetch('/api/resume_auto', { method: 'POST' });
     }
 
-    // 在室メンバー取得＆表示
     async function fetchMembers() {
         try {
             const res = await fetch('/api/members');
@@ -165,7 +159,6 @@
         }
     }
 
-    // メンバー選択トグル
     async function toggleMember(memberId) {
         if (selectedMembers.includes(memberId)) {
             selectedMembers = selectedMembers.filter(id => id !== memberId);
@@ -180,14 +173,16 @@
         fetchMembers();
     }
 
-    // WebSocket によるリアルタイム同期
     function connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            if (data.game_map) currentGameMap = data.game_map;
+            if (data.analog_game_map) {
+                currentAnalogMap = data.analog_game_map;
+                updateSelectorOptions(data.analog_id);
+            }
             
             isManualMode = data.is_manual_mode;
             renderStatus(data.analog, isManualMode);
@@ -202,7 +197,7 @@
         };
 
         ws.onclose = () => {
-            setTimeout(connectWebSocket, 3000); // 切断時は3秒後に再接続
+            setTimeout(connectWebSocket, 3000);
         };
     }
 
