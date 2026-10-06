@@ -181,16 +181,15 @@
             const data = JSON.parse(event.data);
             if (data.analog_game_map) {
                 currentAnalogMap = data.analog_game_map;
-                updateSelectorOptions(data.analog_id);
             }
             
             isManualMode = data.is_manual_mode;
             renderStatus(data.analog, isManualMode);
             
-            if (data.analog_id) {
-                document.getElementById('game-selector').value = data.analog_id;
+            if (data.analog_id !== undefined) {
+                updateSelectorOptions(data.analog_id);
             }
-            if (data.selected_members) {
+            if (data.selected_members !== undefined) {
                 selectedMembers = data.selected_members;
                 fetchMembers();
             }

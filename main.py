@@ -109,8 +109,7 @@ def update_game_map():
         for game in response_all.json()["data"]:
             new_game_map[str(game["ID"])] = game["Name"]
 
-        # 2. アナログゲーム専用の取得（ご提示いただいたコードを適用）
-        # ※ ANALOG_EVENTS_API_URL が専用エンドポイントであればそちらを使用してください
+        # 2. アナログゲーム専用の取得
         response_analog = requests.get(
             EVENTS_API_URL, 
             params={"game_type": "analog"}, 
@@ -328,12 +327,32 @@ async def api_manual_update(request: Request):
     await notify()
     return {"status": "ok", "is_manual_mode": state.is_manual_mode, "analog_id": state.last_analog_id}
 
-# 🔄 手動モード解除API
+# 🔄 手動モード解除API（手動から自動へ戻す際、状態を「何もしてない(0)」にリセット）
 @app.post("/api/resume_auto")
 async def api_resume_auto():
+    now = datetime.now(JST).isoformat()
+    
+    # 手動モードでゲームが選択されていた場合、終了ログを送信
+    if state.last_analog_id != "0":
+        send_log(state.last_analog_id, now, 2, members=state.analog_members)
+
+    # 状態を「何もしてない」にリセット
+    state.last_analog_id = "0"
+    state.analog = "何もしてない"
+    state.analog_members = []
+    state.analog_updated_at = now
     state.is_manual_mode = False
+    
+    print("🔄 手動モード解除: 状態を『何もしてない(0)』にリセットしました。")
+    
+    send_slack()
     await notify()
-    return {"status": "ok", "is_manual_mode": state.is_manual_mode}
+    return {
+        "status": "ok", 
+        "is_manual_mode": state.is_manual_mode,
+        "analog_id": state.last_analog_id,
+        "analog": state.analog
+    }
 
 # =========================
 # ラズパイ受信 (API /analog)
