@@ -100,28 +100,32 @@ state = State()
 def update_game_map():
     global GAME_MAP, ANALOG_GAME_MAP
     try:
-        print("🎮 ゲーム一覧をAPIから取得します")
-        response = requests.get(EVENTS_API_URL, timeout=10)
-        response.raise_for_status()
-
-        games = response.json()["data"]
+        print("🎲 ゲーム一覧を取得しています...")
+        
+        # 1. 全ゲームの取得（デジタル・アナログ両方）
+        response_all = requests.get(EVENTS_API_URL, timeout=10)
+        response_all.raise_for_status()
         new_game_map = {"0": "何もしてない"}
+        for game in response_all.json()["data"]:
+            new_game_map[str(game["ID"])] = game["Name"]
+
+        # 2. アナログゲーム専用の取得（ご提示いただいたコードを適用）
+        # ※ ANALOG_EVENTS_API_URL が専用エンドポイントであればそちらを使用してください
+        response_analog = requests.get(
+            EVENTS_API_URL, 
+            params={"game_type": "analog"}, 
+            timeout=10
+        )
+        response_analog.raise_for_status()
         new_analog_map = {"0": "何もしてない"}
+        for game in response_analog.json()["data"]:
+            new_analog_map[str(game["ID"])] = game["Name"]
 
-        for game in games:
-            game_id = str(game["ID"])
-            game_name = game["Name"]
-            new_game_map[game_id] = game_name
-            
-            # APIのレスポンスに Type 等の識別キーがある場合は条件判定
-            # 例: game.get("Type") == "analog" や "Analog" キーなど
-            # 区分キーが無い・不明な場合は Type フィールドの有無で分岐調整してください
-            if game.get("Type") == "analog" or game.get("Category") == "analog" or "Type" not in game:
-                new_analog_map[game_id] = game_name
-
+        # グローバル変数に反映
         GAME_MAP = new_game_map
         ANALOG_GAME_MAP = new_analog_map
-        print("✅ ゲーム一覧を更新しました（アナログ用件数:", len(ANALOG_GAME_MAP) - 1, "）")
+        
+        print(f"✅ ゲーム一覧取得完了 (全件: {len(GAME_MAP)-1}件, アナログのみ: {len(ANALOG_GAME_MAP)-1}件)")
     except Exception as e:
         print("❌ ゲーム一覧取得エラー:", e)
 
