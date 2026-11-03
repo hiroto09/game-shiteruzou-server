@@ -28,10 +28,7 @@
         .member-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
         .member-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1px solid #ccc; border-radius: 8px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
-        .member-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .member-name { font-size: 1rem; }
-        .tag-badge { background: #e0e0e0; color: #333; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: normal; }
-        .member-item.selected .tag-badge { background: #d2e3fc; color: #174ea6; }
     </style>
 </head>
 <body>
@@ -189,32 +186,23 @@
 
             let members = data.members || [];
 
-            // 🎯 【要件対応】既に選択されている（現在参加している）メンバーを上の方に持ってくるソート
+            // 🎯 既に選択されているメンバーを上の方に持ってくるソート
             members.sort((a, b) => {
                 const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
                 const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
-                return bSelected - aSelected; // 選択されている方を上へ (降順)
+                return bSelected - aSelected;
             });
 
             members.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
                 
-                // メンバー情報とタグ情報の構築
-                let tagsHtml = '';
-                if (m.tags && Array.isArray(m.tags)) {
-                    m.tags.forEach(tag => {
-                        tagsHtml += `<span class="tag-badge">${tag.name}</span>`;
-                    });
-                }
-
+                // 画面には名前のみを表示する
                 item.innerHTML = `
-                    <div class="member-info">
-                        <span class="member-name">${m.name}</span>
-                        ${tagsHtml}
-                    </div>
+                    <span class="member-name">${m.name}</span>
                 `;
                 
+                // クリック時はidを元に切り替え処理を実行
                 item.onclick = () => toggleMember(m.id);
                 container.appendChild(item);
             });
@@ -241,7 +229,7 @@
         fetchMembers();
     }
 
-    // メンバー情報をサーバーに保存する関数
+    // メンバー情報をサーバーに保存する関数（idとnameを保持したまま送信）
     async function saveSelectedMembers() {
         await fetch('/api/members', {
             method: 'POST',
