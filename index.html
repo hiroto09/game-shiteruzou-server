@@ -25,13 +25,13 @@
         .btn-resume { background-color: #f9ab00; color: #202124; width: 100%; margin-top: 15px; padding: 12px; font-size: 1rem; border-radius: 6px; font-weight: bold; display: none; }
         .btn-resume:hover { background-color: #e39900; }
         
-        .member-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-        .member-item { padding: 8px 14px; border: 1px solid #ccc; border-radius: 16px; cursor: pointer; user-select: none; background: #fff; display: flex; flex-direction: column; gap: 4px; }
+        .member-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+        .member-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1px solid #ccc; border-radius: 8px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
+        .member-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .member-name { font-size: 1rem; }
-        .member-tags { font-size: 0.75rem; color: #666; display: flex; gap: 4px; }
-        .tag-badge { background: #eee; padding: 2px 6px; border-radius: 4px; }
-        .member-item.selected .tag-badge { background: #d2e3fc; color: #1a73e8; }
+        .tag-badge { background: #e0e0e0; color: #333; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: normal; }
+        .member-item.selected .tag-badge { background: #d2e3fc; color: #174ea6; }
     </style>
 </head>
 <body>
@@ -76,7 +76,7 @@
     let currentAnalogMap = {};
     let selectedMembers = [];
     let isManualMode = false;
-    let previousGameId = null;
+    let previousGameId = null; // 前回のゲームIDを保持
 
     async function init() {
         await fetchStatus();
@@ -93,6 +93,8 @@
             isManualMode = data.is_manual_mode;
             
             const currentGameId = String(data.confirmed.analog_id);
+            
+            // 状態が切り替われたときの処理
             await handleGameStateChange(currentGameId, data.selected_members || []);
 
             updateSelectorOptions(currentGameId);
@@ -102,11 +104,17 @@
         }
     }
 
+    // ゲームIDが切り替わった時の判定ロジック
     async function handleGameStateChange(currentGameId, serverMembers) {
         if (previousGameId !== null) {
+            // パターン1: 「0」から「その他」へ変わった瞬間
             if (previousGameId === "0" && currentGameId !== "0") {
+                console.log("0 -> その他のゲームへ移行: 選択中メンバーをサーバーに送信します");
                 await saveSelectedMembers();
-            } else if (previousGameId !== "0" && currentGameId === "0") {
+            }
+            // パターン2: 「その他」から「0」へ変わった瞬間
+            else if (previousGameId !== "0" && currentGameId === "0") {
+                console.log("その他のゲーム -> 0へ移行: メンバーをリセットします");
                 selectedMembers = [];
                 await saveSelectedMembers();
             }
@@ -119,6 +127,7 @@
         previousGameId = currentGameId;
     }
 
+    // アナログゲームのみをセレクターにセット
     function updateSelectorOptions(selectedId) {
         const selector = document.getElementById('game-selector');
         selector.innerHTML = '';
@@ -152,6 +161,7 @@
 
     async function setManualGame() {
         const analogId = document.getElementById('game-selector').value;
+        
         await handleGameStateChange(String(analogId), selectedMembers);
 
         await fetch('/api/manual_update', {
@@ -169,45 +179,42 @@
         try {
             const res = await fetch('/api/members');
             const data = await res.json();
-            const members = data.members || [];
+            
+            if (previousGameId !== "0" && data.selected_members && selectedMembers.length === 0) {
+                selectedMembers = data.selected_members;
+            }
 
             const container = document.getElementById('member-container');
             container.innerHTML = '';
 
-            // 並び替えロジック:
-            // 1. 現在選択されている（selectedMembersに含まれる）メンバー
-            // 2. 滞在ウォッチ等で現在取得されているメンバー / その他のメンバー
-            // 上位に「現在表示中/滞在中のメンバー」や「選択中メンバー」を配置するようにソート
+            let members = data.members || [];
+
+            // 🎯 【要件対応】既に選択されている（現在参加している）メンバーを上の方に持ってくるソート
             members.sort((a, b) => {
-                const aSelected = selectedMembers.includes(a.id);
-                const bSelected = selectedMembers.includes(b.id);
-                if (aSelected && !bSelected) return -1;
-                if (!aSelected && bSelected) return 1;
-                return 0;
+                const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
+                const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
+                return bSelected - aSelected; // 選択されている方を上へ (降順)
             });
 
             members.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
                 
-                const nameDiv = document.createElement('div');
-                nameDiv.className = 'member-name';
-                nameDiv.innerText = m.name;
-                item.appendChild(nameDiv);
-
-                // タグ情報の描画
-                if (m.tags && m.tags.length > 0) {
-                    const tagsDiv = document.createElement('div');
-                    tagsDiv.className = 'member-tags';
+                // メンバー情報とタグ情報の構築
+                let tagsHtml = '';
+                if (m.tags && Array.isArray(m.tags)) {
                     m.tags.forEach(tag => {
-                        const tagBadge = document.createElement('span');
-                        tagBadge.className = 'tag-badge';
-                        tagBadge.innerText = tag.name;
-                        tagsDiv.appendChild(tagBadge);
+                        tagsHtml += `<span class="tag-badge">${tag.name}</span>`;
                     });
-                    item.appendChild(tagsDiv);
                 }
 
+                item.innerHTML = `
+                    <div class="member-info">
+                        <span class="member-name">${m.name}</span>
+                        ${tagsHtml}
+                    </div>
+                `;
+                
                 item.onclick = () => toggleMember(m.id);
                 container.appendChild(item);
             });
@@ -223,13 +230,18 @@
             selectedMembers.push(memberId);
         }
         
-        fetchMembers(); // 再描画（ソート順更新）
+        renderMemberSelection();
         
         if (previousGameId !== "0") {
             await saveSelectedMembers();
         }
     }
 
+    function renderMemberSelection() {
+        fetchMembers();
+    }
+
+    // メンバー情報をサーバーに保存する関数
     async function saveSelectedMembers() {
         await fetch('/api/members', {
             method: 'POST',
@@ -253,7 +265,9 @@
             
             if (data.analog_id !== undefined) {
                 const currentGameId = String(data.analog_id);
+                
                 await handleGameStateChange(currentGameId, data.selected_members || []);
+
                 updateSelectorOptions(currentGameId);
             }
             
