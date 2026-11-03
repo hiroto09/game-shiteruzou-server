@@ -30,6 +30,8 @@
         .member-item { display: inline-flex; align-items: center; padding: 8px 16px; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; font-size: 0.95rem; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
         .member-name { font-size: 0.95rem; }
+
+        .add-member-section { display: flex; gap: 10px; margin-top: 15px; align-items: center; border-top: 1px solid #f0f0f0; padding-top: 15px; }
     </style>
 </head>
 <body>
@@ -65,8 +67,18 @@
 
 <div class="card">
     <h2>👥 参加メンバー設定</h2>
+    
+    <div style="font-size: 0.85rem; color: #666; margin-bottom: 5px;">滞在中のメンバー</div>
     <div id="member-container" class="member-list">
         読み込み中...
+    </div>
+
+    <!-- 滞在者一覧に含まれていないメンバーを追加する用セレクター -->
+    <div class="add-member-section">
+        <select id="missing-member-selector">
+            <option value="">-- その他のメンバーを追加 --</option>
+        </select>
+        <button onclick="addMemberFromSelector()">追加</button>
     </div>
 </div>
 
@@ -103,12 +115,9 @@
 
     async function handleGameStateChange(currentGameId, serverMembers) {
         if (previousGameId !== null) {
-            // 「0」から「その他」へ変わった瞬間：選択中のメンバーを送信
             if (previousGameId === "0" && currentGameId !== "0") {
                 await saveSelectedMembers();
-            }
-            // 「その他」から「0」へ変わった瞬間：メンバーをリセット
-            else if (previousGameId !== "0" && currentGameId === "0") {
+            } else if (previousGameId !== "0" && currentGameId === "0") {
                 selectedMembers = [];
                 await saveSelectedMembers();
             }
@@ -155,7 +164,7 @@
     async function setManualGame() {
         const analogId = document.getElementById('game-selector').value;
         
-        isManualMode = true; // 手動モードフラグを即座に有効化
+        isManualMode = true;
         renderStatus(currentAnalogMap[analogId] || "手動選択ゲーム", true);
 
         await handleGameStateChange(String(analogId), selectedMembers);
@@ -186,28 +195,45 @@
             const container = document.getElementById('member-container');
             container.innerHTML = '';
 
-            let members = data.members || [];
+            const allMembers = data.members || [];
+            
+            // 滞在者（is_stayer: true）を表示用メインコンテナに配置
+            // または選択されている非滞在者も上に持ってきて表示
+            const displayedMembers = allMembers.filter(m => m.is_stayer || selectedMembers.includes(m.id));
+            const hiddenMembers = allMembers.filter(m => !m.is_stayer && !selectedMembers.includes(m.id));
 
-            // 選択済みのメンバーを上（前）に寄せるソート
-            members.sort((a, b) => {
+            // 選択されている人を上に寄せるソート
+            displayedMembers.sort((a, b) => {
                 const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
                 const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
                 return bSelected - aSelected;
             });
 
-            members.forEach(m => {
+            displayedMembers.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
-                
-                // 画面には名前のみを表示（データとしてはidを維持）
                 item.innerHTML = `<span class="member-name">${m.name}</span>`;
-                
                 item.onclick = () => toggleMember(m.id);
                 container.appendChild(item);
             });
+
+            // 滞在者一覧に載っていない人を下のセレクターにセット
+            updateMissingSelector(hiddenMembers);
         } catch (e) {
             console.error("メンバー取得エラー:", e);
         }
+    }
+
+    function updateMissingSelector(hiddenMembers) {
+        const selector = document.getElementById('missing-member-selector');
+        selector.innerHTML = '<option value="">-- その他のメンバーを追加 --</option>';
+
+        hiddenMembers.forEach(user => {
+            const opt = document.createElement('option');
+            opt.value = user.id;
+            opt.textContent = user.name;
+            selector.appendChild(opt);
+        });
     }
 
     async function toggleMember(memberId) {
@@ -219,6 +245,21 @@
         
         renderMemberSelection();
         
+        if (previousGameId !== "0") {
+            await saveSelectedMembers();
+        }
+    }
+
+    async function addMemberFromSelector() {
+        const selector = document.getElementById('missing-member-selector');
+        const selectedId = Number(selector.value);
+        if (!selectedId) return;
+
+        if (!selectedMembers.includes(selectedId)) {
+            selectedMembers.push(selectedId);
+        }
+
+        renderMemberSelection();
         if (previousGameId !== "0") {
             await saveSelectedMembers();
         }
@@ -243,7 +284,6 @@
         ws.onmessage = async (event) => {
             const data = JSON.parse(event.data);
             
-            // 🛑 手動モード時は自動更新通知による画面の勝手な上書きを防止
             if (isManualMode && !data.is_manual_mode) {
                 return;
             }

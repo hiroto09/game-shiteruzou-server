@@ -17,6 +17,7 @@ CHANNEL = "#prj_game_shiteruzo"
 
 LOG_API_URL = os.getenv("LOG_API_URL")
 STAYWATCH_API_URL = os.getenv("STAYWATCH_API_URL")
+STAYWATCH_API_USERS = os.getenv("STAYWATCH_API_USERS")
 STAYWATCH_API_KEY = os.getenv("STAYWATCH_API_KEY")
 EVENTS_API_URL = os.getenv("EVENTS_API_URL")
 
@@ -131,6 +132,7 @@ def update_game_map():
 update_game_map()
 
 def get_stayers():
+    """STAYWATCH_API_URLから現在の滞在者情報を取得"""
     if not STAYWATCH_API_URL or not STAYWATCH_API_KEY:
         return []
     try:
@@ -142,7 +144,23 @@ def get_stayers():
         if res.status_code == 200:
             return res.json()
     except Exception as e:
-        print("🔥 staywatch APIエラー:", e)
+        print("🔥 staywatch API (stayers) エラー:", e)
+    return []
+
+def get_users():
+    """STAYWATCH_API_USERSから全ユーザー情報を取得"""
+    if not STAYWATCH_API_USERS or not STAYWATCH_API_KEY:
+        return []
+    try:
+        res = requests.get(
+            STAYWATCH_API_USERS,
+            headers={"X-API-Key": STAYWATCH_API_KEY},
+            timeout=5
+        )
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        print("🔥 staywatch API (users) エラー:", e)
     return []
 
 # =========================
@@ -203,7 +221,7 @@ async def websocket_endpoint(ws: WebSocket):
         "analog_id": state.last_analog_id,
         "selected_members": state.analog_members,
         "is_manual_mode": state.is_manual_mode,
-        "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
+        "analog_game_map": ANALOG_GAME_MAP,
         "users": []
     })
 
@@ -220,7 +238,15 @@ async def notify():
         try:
             loop = asyncio.get_event_loop()
             stayers = await loop.run_in_executor(None, get_stayers)
-            users = [s["name"] for s in stayers if s["id"] in state.analog_members]
+            all_users = await loop.run_in_executor(None, get_users)
+            
+            # stayers と all_users の両方から名前を検索
+            combined = {s["id"]: s["name"] for s in stayers}
+            for u in all_users:
+                if u["id"] not in combined:
+                    combined[u["id"]] = u["name"]
+                    
+            users = [combined[m_id] for m_id in state.analog_members if m_id in combined]
         except Exception as e:
             print("stayers取得エラー:", e)
 
@@ -231,7 +257,7 @@ async def notify():
                 "analog_id": state.last_analog_id,
                 "selected_members": state.analog_members,
                 "is_manual_mode": state.is_manual_mode,
-                "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
+                "analog_game_map": ANALOG_GAME_MAP,
                 "users": users
             })
         except Exception:
@@ -298,14 +324,38 @@ async def api_status():
         "selected_members": state.analog_members,
         "inference_running": state.inference_running,
         "is_manual_mode": state.is_manual_mode,
-        "analog_game_map": ANALOG_GAME_MAP  # アナログゲームのみ配信
+        "analog_game_map": ANALOG_GAME_MAP
     }
 
 @app.get("/api/members")
 async def api_get_members():
+    """
+    STAYWATCH_API_URL(滞在者) を上に、
+    取得できなかった全ユーザー(STAYWATCH_API_USERS)を下に結合して返す
+    """
     loop = asyncio.get_event_loop()
     stayers = await loop.run_in_executor(None, get_stayers)
-    return {"members": [{"id": s["id"], "name": s["name"]} for s in stayers]}
+    users = await loop.run_in_executor(None, get_users)
+
+    # 滞在者のID一覧
+    stayer_ids = {s["id"] for s in stayers}
+    
+    # リスト構造を統一
+    stayer_list = [{"id": s["id"], "name": s["name"], "is_stayer": True} for s in stayers]
+    
+    # stayers で取得できなかったユーザーを抽出
+    non_stayer_list = [
+        {"id": u["id"], "name": u["name"], "is_stayer": False}
+        for u in users if u["id"] not in stayer_ids
+    ]
+    
+    # 滞在者を上に、それ以外を下に配置
+    combined_members = stayer_list + non_stayer_list
+
+    return {
+        "members": combined_members,
+        "selected_members": state.analog_members
+    }
 
 @app.post("/api/members")
 async def api_post_members(request: Request):
@@ -327,16 +377,14 @@ async def api_manual_update(request: Request):
     await notify()
     return {"status": "ok", "is_manual_mode": state.is_manual_mode, "analog_id": state.last_analog_id}
 
-# 🔄 手動モード解除API（手動から自動へ戻す際、状態を「何もしてない(0)」にリセット）
+# 🔄 手動モード解除API
 @app.post("/api/resume_auto")
 async def api_resume_auto():
     now = datetime.now(JST).isoformat()
     
-    # 手動モードでゲームが選択されていた場合、終了ログを送信
     if state.last_analog_id != "0":
         send_log(state.last_analog_id, now, 2, members=state.analog_members)
 
-    # 状態を「何もしてない」にリセット
     state.last_analog_id = "0"
     state.analog = "何もしてない"
     state.analog_members = []
@@ -389,7 +437,6 @@ async def analog_endpoint(
                 f.write(contents)
             print(f"📸 Analog画像を保存しました: {save_path}")
 
-        # 手動モードでない場合のみ自動更新を行う
         if not state.is_manual_mode:
             print(f"🃏 Raspi -> Analog ID (自動適用): {analog_id_str}")
             await handle_analog_change(analog_id_str, state.analog_members)
