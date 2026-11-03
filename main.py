@@ -1,140 +1,184 @@
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Response, File, UploadFile, Form
-from fastapi.responses import HTMLResponse
-from datetime import datetime, timezone, timedelta
 import os
-from dotenv import load_dotenv
-import asyncio
-from slack_sdk import WebClient
+import time
+import signal
 import requests
+import cv2
+import numpy as np
+from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+from google import genai
+from PIL import Image
+from picamera2 import Picamera2
+
+# =========================================================
+# タイムアウト用ヘルパー (カメラキャプチャ等のフリーズ防止)
+# =========================================================
+
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException("処理がタイムアウトしました")
+
+# SIGALRM を使用したタイムアウトコンテキストマネージャ (Linux / Raspberry Pi 環境用)
+class timeout:
+    def __init__(self, seconds=10):
+        self.seconds = seconds
+
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(self.seconds)
+
+    def __exit__(self, type, value, traceback):
+        signal.alarm(0)
+
+
+# =========================================================
+# .env & 環境変数チェック
+# =========================================================
 
 load_dotenv()
 
-# =========================
-# 定数・ディレクトリ作成
-# =========================
-
-CHANNEL = "#prj_game_shiteruzo"
-
-LOG_API_URL = os.getenv("LOG_API_URL")
+# HOST_API_URL はホストサーバーの /analog エンドポイント
+HOST_API_URL = os.getenv("API_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ANALOG_EVENTS_API_URL = os.getenv("ANALOG_EVENTS_API_URL")
 STAYWATCH_API_URL = os.getenv("STAYWATCH_API_URL")
 STAYWATCH_API_KEY = os.getenv("STAYWATCH_API_KEY")
+LOG_API_URL = os.getenv("LOG_API_URL")
 EVENTS_API_URL = os.getenv("EVENTS_API_URL")
 
-IMAGE_SAVE_DIR = "saved_images"
-DIGITAL_IMAGE_DIR = os.path.join(IMAGE_SAVE_DIR, "digital")
-ANALOG_IMAGE_DIR = os.path.join(IMAGE_SAVE_DIR, "analog")
+if not HOST_API_URL: raise ValueError("API_URL が設定されていません")
+if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY が設定されていません")
+if not ANALOG_EVENTS_API_URL: raise ValueError("ANALOG_EVENTS_API_URL が設定されていません")
 
-os.makedirs(DIGITAL_IMAGE_DIR, exist_ok=True)
-os.makedirs(ANALOG_IMAGE_DIR, exist_ok=True)
+session = requests.Session()
 
-slack_client = WebClient(
-    token=os.environ.get("SLACK_BOT_TOKEN")
-)
+# ログ設定
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "analog_prediction.log")
+ERROR_LOG_FILE = os.path.join(LOG_DIR, "gemini_errors.log")
+os.makedirs(LOG_DIR, exist_ok=True)
 
-# =========================
-# ゲームマップ
-# =========================
+# フォールバック用モデルリスト（優先順位順）
+FALLBACK_MODELS = [
+    "gemini-flash-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+]
 
-GAME_MAP = {"0": "何もしてない"}
-ANALOG_GAME_MAP = {"0": "何もしてない"}  # アナログゲーム専用マップ（セレクター用）
-
-# =========================
-# FastAPI
-# =========================
-
-app = FastAPI()
+# タイムアウト時間設定 (秒)
+HTTP_TIMEOUT = 10
+CAMERA_TIMEOUT = 10
+GEMINI_TIMEOUT = 180  # 3分間のタイムアウト
 
 JST = timezone(timedelta(hours=9))
 
-# =========================
-# IP制限設定
-# =========================
-ALLOWED_IPS = ["192.168.101.101", "202.15.17.104"]
 
-@app.middleware("http")
-async def ip_restriction_middleware(request: Request, call_next):
-    if request.url.path == "/" or request.url.path.startswith("/api/") or request.url.path == "/ws":
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            client_ip = forwarded_for.split(",")[0].strip()
-        else:
-            client_ip = request.client.host if request.client else None
+# =========================================================
+# ログ出力関数
+# =========================================================
 
-        if client_ip not in ALLOWED_IPS:
-            print(f"🚨 拒否されたIPからのアクセス: {client_ip} (Path: {request.url.path})")
-            return Response(content="Access Denied", status_code=403)
+def write_error_log(error_type, model_name, detail=""):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] ERROR: {error_type} | MODEL: {model_name}"
+    if detail:
+        log_line += f" | DETAIL: {detail}"
+    log_line += "\n"
     
-    response = await call_next(request)
-    return response
+    try:
+        with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print("❌ エラーログ保存失敗:", e)
 
-# =========================
+
+# =========================================================
+# ゲーム一覧 & Prompt
+# =========================================================
+
+GAME_MAP = {"0": "何もしてない"}
+ANALOG_GAME_MAP = {"0": "何もしてない"}
+
+def get_game_map():
+    global GAME_MAP, ANALOG_GAME_MAP
+    try:
+        print("🎲 ゲーム一覧を取得しています...")
+        response = session.get(ANALOG_EVENTS_API_URL, params={"game_type": "analog"}, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        
+        games = response.json()["data"]
+        new_game_map = {"0": "何もしてない"}
+        for game in games:
+            new_game_map[str(game["ID"])] = game["Name"]
+            
+        ANALOG_GAME_MAP = new_game_map
+        GAME_MAP = new_game_map
+        print("✅ ゲーム一覧取得完了")
+    except Exception as e:
+        print("❌ ゲーム一覧取得エラー:", e)
+
+get_game_map()
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+PROMPT_FILE = "prompt.txt"
+
+if not os.path.exists(PROMPT_FILE):
+    raise FileNotFoundError(f"{PROMPT_FILE} が見つかりません")
+
+def create_prompt():
+    with open(PROMPT_FILE, "r", encoding="utf-8") as f:
+        prompt_template = f.read()
+    candidates = "\n".join(f'    "{gid}": "{gname}",' for gid, gname in ANALOG_GAME_MAP.items())
+    return prompt_template.replace("{GAME_CANDIDATES}", candidates)
+
+PROMPT = create_prompt()
+
+
+# =========================================================
+# Camera & 推定設定
+# =========================================================
+
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(
+    main={"size": (640, 640), "format": "RGB888"}
+)
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+print("📷 Camera started")
+
+INTERVAL = 60
+CHANGE_THRESHOLD = 200000
+CONFIDENCE_THRESHOLD = 80
+
+
+# =========================================================
 # 状態管理
-# =========================
+# =========================================================
 
 class State:
     def __init__(self):
-        # digital
-        self.digital = "何もしてない"
-        self.last_digital = None
-        self.last_digital_id = None
-        self.digital_start_time = None
-
-        # analog
         self.analog = "何もしてない"
         self.last_analog_id = "0"
         self.analog_members = []
         self.analog_updated_at = None
-        
-        # inference status
         self.inference_running = False
-
-        # 手動モードフラグ (アナログのみ適用)
         self.is_manual_mode = False
 
 state = State()
 
-# =========================
-# 初期化・API連携
-# =========================
 
-def update_game_map():
-    global GAME_MAP, ANALOG_GAME_MAP
-    try:
-        print("🎲 ゲーム一覧を取得しています...")
-        
-        # 1. 全ゲームの取得（デジタル・アナログ両方）
-        response_all = requests.get(EVENTS_API_URL, timeout=10)
-        response_all.raise_for_status()
-        new_game_map = {"0": "何もしてない"}
-        for game in response_all.json()["data"]:
-            new_game_map[str(game["ID"])] = game["Name"]
-
-        # 2. アナログゲーム専用の取得
-        response_analog = requests.get(
-            EVENTS_API_URL, 
-            params={"game_type": "analog"}, 
-            timeout=10
-        )
-        response_analog.raise_for_status()
-        new_analog_map = {"0": "何もしてない"}
-        for game in response_analog.json()["data"]:
-            new_analog_map[str(game["ID"])] = game["Name"]
-
-        # グローバル変数に反映
-        GAME_MAP = new_game_map
-        ANALOG_GAME_MAP = new_analog_map
-        
-        print(f"✅ ゲーム一覧取得完了 (全件: {len(GAME_MAP)-1}件, アナログのみ: {len(ANALOG_GAME_MAP)-1}件)")
-    except Exception as e:
-        print("❌ ゲーム一覧取得エラー:", e)
-
-update_game_map()
+# =========================================================
+# StayWatch 関連
+# =========================================================
 
 def get_stayers():
     if not STAYWATCH_API_URL or not STAYWATCH_API_KEY:
         return []
     try:
-        res = requests.get(
+        res = session.get(
             STAYWATCH_API_URL,
             headers={"X-API-Key": STAYWATCH_API_KEY},
             timeout=5
@@ -145,139 +189,126 @@ def get_stayers():
         print("🔥 staywatch APIエラー:", e)
     return []
 
-# =========================
-# ログ送信・Slack送信
-# =========================
 
-def send_log(event_id, event_time, status, members=None, room_users=None):
-    if str(event_id) == "0":
-        return
+# =========================================================
+# 推論・ヘルパー関数
+# =========================================================
 
-    try:
-        log_data = {
-            "event_id": str(event_id),
-            "event_time": event_time,
-            "status_id": int(status)
-        }
-        
-        if members is not None:
-            log_data["participate_users"] = [int(m) for m in members]
+def safe_capture_array():
+    with timeout(CAMERA_TIMEOUT):
+        frame = picam2.capture_array()
+        return frame[:, :, ::-1]
+
+def has_changed(prev_frame, current_frame, threshold=CHANGE_THRESHOLD):
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_RGB2GRAY)
+    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_RGB2GRAY)
+    diff = cv2.absdiff(prev_gray, curr_gray)
+    _, diff = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+    
+    changed_pixels = np.count_nonzero(diff)
+    total_pixels = diff.size
+    percentage = (changed_pixels / total_pixels) * 100
+    
+    print(f"📊 画面変化: {changed_pixels:,} / {total_pixels:,} px ({percentage:.2f}%) - 閾値: {threshold:,} px")
+    
+    return changed_pixels > threshold
+
+def recognize_boardgame(image_path):
+    image = Image.open(image_path)
+    while True:
+        for model_name in FALLBACK_MODELS:
+            try:
+                print(f"🤖 Gemini 推論中 (モデル: {model_name})...")
+                with timeout(GEMINI_TIMEOUT):
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=[image, PROMPT]
+                    )
+                if response.text:
+                    print(f"✅ Gemini 応答受信用 (モデル: {model_name})")
+                    return response.text
+                raise RuntimeError(f"Gemini({model_name})から応答本文がありません")
+            except Exception as e:
+                err_msg = str(e)
+                print(f"❌ Geminiエラー ({model_name}): {err_msg}")
+                if "429" in err_msg:
+                    write_error_log("429 (Rate Limit Exceeded)", model_name, err_msg[:100])
+                    time.sleep(3600)
+                    break 
+                if "503" in err_msg or "timeout" in err_msg.lower() or isinstance(e, TimeoutException):
+                    err_type = "Timeout (3 mins)" if isinstance(e, TimeoutException) else ("503 (Service Unavailable)" if "503" in err_msg else "Timeout")
+                    write_error_log(err_type, model_name, err_msg[:100])
+                    time.sleep(2)
+                    continue
+                write_error_log("Other Error", model_name, err_msg[:100])
+                time.sleep(600)
+                break
         else:
-            log_data["participate_users"] = []
+            time.sleep(300)
 
-        if room_users is not None:
-            log_data["room_users"] = [int(u) for u in room_users]
+def parse_result(result):
+    analog_id, confidence, reason = "0", 0, ""
+    if not result: return analog_id, confidence, reason
+    for line in result.splitlines():
+        line = line.strip()
+        if line.lower().startswith("id"):
+            try: analog_id = line.split(":", 1)[1].strip()
+            except: pass
+        elif "信頼度" in line:
+            try: confidence = int(line.split(":", 1)[1].replace("%", "").strip())
+            except: pass
+        elif "根拠" in line:
+            try: reason = line.split(":", 1)[1].strip()
+            except: pass
+    return analog_id, confidence, reason
+
+def write_prediction_log(result, analog_id, confidence, reason):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("========================================\n")
+            f.write(f"日時: {timestamp}\nid: {analog_id}\n信頼度: {confidence}%\n根拠: {reason}\n")
+            f.write("Gemini生回答:\n" + (result.strip() if result else "なし") + "\n")
+            f.write("========================================\n\n")
+    except Exception as e:
+        print("ログ保存エラー:", e)
+
+def notify_server(analog_id=None, inference_running=None, image_path=None):
+    data = {}
+    if analog_id is not None:
+        data["analog_id"] = str(analog_id)
+    if inference_running is not None:
+        data["inference_running"] = str(inference_running)
+
+    files = None
+    file_obj = None
+
+    try:
+        if image_path and os.path.exists(image_path):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"analog_{analog_id or 'unknown'}_{timestamp}.jpg"
+            file_obj = open(image_path, "rb")
+            files = {"image": (filename, file_obj, "image/jpeg")}
+
+        if files:
+            res = session.post(HOST_API_URL, data=data, files=files, timeout=HTTP_TIMEOUT)
         else:
-            log_data["room_users"] = []
+            res = session.post(HOST_API_URL, json=data, timeout=HTTP_TIMEOUT)
+            
+        res.raise_for_status()
+        print(f"📤 サーバー通知完了 (HTTP Status: {res.status_code})")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ サーバーへの送信失敗: {e}")
+    finally:
+        if file_obj:
+            file_obj.close()
 
-        res = requests.post(LOG_API_URL, json={"logs": [log_data]}, timeout=5)
-        print(f"LOG SEND: id={event_id} status={status} participants={log_data['participate_users']} HTTP={res.status_code}")
-    except Exception as e:
-        print("ログ送信エラー:", e)
-        
-def send_slack():
-    try:
-        slack_client.chat_postMessage(
-            channel=CHANNEL,
-            text="状態更新",
-            blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
-            ]
-        )
-    except Exception as e:
-        print("❌ Slackエラー:", e)
 
-# =========================
-# WebSocket
-# =========================
+# =========================================================
+# FastAPI Endpoints
+# =========================================================
 
-clients = []
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    clients.append(ws)
-    await ws.send_json({
-        "analog": state.analog,
-        "analog_id": state.last_analog_id,
-        "selected_members": state.analog_members,
-        "is_manual_mode": state.is_manual_mode,
-        "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
-        "users": []
-    })
-
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        if ws in clients:
-            clients.remove(ws)
-
-async def notify():
-    users = []
-    if state.analog != "何もしてない":
-        try:
-            loop = asyncio.get_event_loop()
-            stayers = await loop.run_in_executor(None, get_stayers)
-            users = [s["name"] for s in stayers if s["id"] in state.analog_members]
-        except Exception as e:
-            print("stayers取得エラー:", e)
-
-    for ws in clients:
-        try:
-            await ws.send_json({
-                "analog": state.analog,
-                "analog_id": state.last_analog_id,
-                "selected_members": state.analog_members,
-                "is_manual_mode": state.is_manual_mode,
-                "analog_game_map": ANALOG_GAME_MAP,  # アナログゲームのみ送信
-                "users": users
-            })
-        except Exception:
-            pass
-
-# =========================
-# アナログ状態統合変更処理
-# =========================
-
-async def handle_analog_change(new_id, new_members):
-    new_id = str(new_id)
-    if new_id not in GAME_MAP:
-        new_id = "0"
-
-    new_name = GAME_MAP.get(new_id, "何もしてない")
-    now = datetime.now(JST).isoformat()
-    changed = False
-
-    game_changed = (new_id != state.last_analog_id)
-
-    if game_changed:
-        new_members = []
-
-    if game_changed or new_members != state.analog_members:
-
-        if game_changed:
-            if state.last_analog_id != "0":
-                send_log(state.last_analog_id, now, 2, members=state.analog_members)
-
-            if new_id != "0":
-                send_log(new_id, now, 1, members=new_members)
-
-            state.last_analog_id = new_id
-            state.analog = new_name
-            send_slack()
-
-        state.analog_members = new_members
-        state.analog_updated_at = now
-        changed = True
-
-    if changed:
-        await notify()
-
-# =========================
-# フロントエンド用 API エンドポイント
-# =========================
+app = FastAPI()
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
@@ -298,160 +329,104 @@ async def api_status():
         "selected_members": state.analog_members,
         "inference_running": state.inference_running,
         "is_manual_mode": state.is_manual_mode,
-        "analog_game_map": ANALOG_GAME_MAP  # アナログゲームのみ配信
+        "analog_game_map": ANALOG_GAME_MAP
     }
 
 @app.get("/api/members")
 async def api_get_members():
+    """
+    滞在ウォッチ（StayWatch）に登録されているユーザ情報をそのまま返却する
+    """
     loop = asyncio.get_event_loop()
     stayers = await loop.run_in_executor(None, get_stayers)
-    return {"members": [{"id": s["id"], "name": s["name"]} for s in stayers]}
+    # stayersには id, name, tags などの詳細情報が含まれている前提
+    return {"members": stayers}
 
 @app.post("/api/members")
 async def api_post_members(request: Request):
     data = await request.json()
     members = data.get("members", [])
-    
-    await handle_analog_change(state.last_analog_id, members)
+    state.analog_members = members
     return {"status": "ok", "selected_members": state.analog_members}
 
-# 🛠️ アナログゲーム専用の手動登録・更新API
 @app.post("/api/manual_update")
 async def api_manual_update(request: Request):
     data = await request.json()
     analog_id = str(data.get("analog_id", "0"))
-
     state.is_manual_mode = True
-    
-    await handle_analog_change(analog_id, state.analog_members)
-    await notify()
+    state.last_analog_id = analog_id
+    state.analog = ANALOG_GAME_MAP.get(analog_id, "不明")
+    state.analog_updated_at = datetime.now(JST).isoformat()
     return {"status": "ok", "is_manual_mode": state.is_manual_mode, "analog_id": state.last_analog_id}
 
-# 🔄 手動モード解除API（手動から自動へ戻す際、状態を「何もしてない(0)」にリセット）
 @app.post("/api/resume_auto")
 async def api_resume_auto():
-    now = datetime.now(JST).isoformat()
-    
-    # 手動モードでゲームが選択されていた場合、終了ログを送信
-    if state.last_analog_id != "0":
-        send_log(state.last_analog_id, now, 2, members=state.analog_members)
-
-    # 状態を「何もしてない」にリセット
     state.last_analog_id = "0"
     state.analog = "何もしてない"
     state.analog_members = []
-    state.analog_updated_at = now
+    state.analog_updated_at = datetime.now(JST).isoformat()
     state.is_manual_mode = False
-    
-    print("🔄 手動モード解除: 状態を『何もしてない(0)』にリセットしました。")
-    
-    send_slack()
-    await notify()
-    return {
-        "status": "ok", 
-        "is_manual_mode": state.is_manual_mode,
-        "analog_id": state.last_analog_id,
-        "analog": state.analog
-    }
+    return {"status": "ok", "is_manual_mode": state.is_manual_mode}
 
-# =========================
-# ラズパイ受信 (API /analog)
-# =========================
 
-@app.post("/analog")
-async def analog_endpoint(
-    request: Request,
-    analog_id: str = Form(None),
-    inference_running: bool = Form(None),
-    image: UploadFile = File(None)
-):
-    content_type = request.headers.get("content-type", "")
-    
-    if "application/json" in content_type:
-        data = await request.json()
-        recv_analog_id = data.get("analog_id")
-        recv_inference_running = data.get("inference_running")
-    else:
-        recv_analog_id = analog_id
-        recv_inference_running = inference_running
+# =========================================================
+# メインループ
+# =========================================================
 
-    if recv_inference_running is not None:
-        state.inference_running = recv_inference_running
+def inference_loop():
+    previous_frame = safe_capture_array()
+    print("🟢 監視開始")
 
-    if recv_analog_id is not None:
-        analog_id_str = str(recv_analog_id)
-        
-        if image is not None:
-            filename = image.filename if image.filename else f"{analog_id_str}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
-            save_path = os.path.join(ANALOG_IMAGE_DIR, filename)
-            contents = await image.read()
-            with open(save_path, "wb") as f:
-                f.write(contents)
-            print(f"📸 Analog画像を保存しました: {save_path}")
-
-        # 手動モードでない場合のみ自動更新を行う
-        if not state.is_manual_mode:
-            print(f"🃏 Raspi -> Analog ID (自動適用): {analog_id_str}")
-            await handle_analog_change(analog_id_str, state.analog_members)
-        else:
-            print(f"🛑 Raspi -> Analog ID: {analog_id_str} (手動モード中のため無視されました)")
-
-    return {
-        "status": "ok", 
-        "is_manual_mode": state.is_manual_mode,
-        "current_analog_id": state.last_analog_id
-    }
-
-# =========================
-# 外部受信 (API /digital, /events)
-# =========================
-
-@app.post("/digital")
-async def result(
-    request: Request,
-    class_id: str = Form(None),
-    image: UploadFile = File(None)
-):
-    content_type = request.headers.get("content-type", "")
-    
-    if "application/json" in content_type:
-        data = await request.json()
+    while True:
         try:
-            game_id = str(int(data["class_id"]))
-        except Exception:
-            raise HTTPException(422, "Invalid JSON")
-    else:
-        if class_id is None:
-            raise HTTPException(422, "Missing class_id")
-        game_id = str(int(class_id))
+            time.sleep(INTERVAL)
+            current_frame = safe_capture_array()
+            
+            mean_r = np.mean(current_frame[:, :, 0])
+            mean_g = np.mean(current_frame[:, :, 1])
+            mean_b = np.mean(current_frame[:, :, 2])
+            print(f"🎨 画像の平均RGB値 -> R: {mean_r:.1f}, G: {mean_g:.1f}, B: {mean_b:.1f}")
 
-    now = datetime.now(JST).isoformat()
+            if not has_changed(previous_frame, current_frame):
+                previous_frame = current_frame
+                continue
+            
+            start_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"🚀 推定を開始します (時刻: {start_time_str})")
 
-    if image is not None:
-        filename = image.filename if image.filename else f"{game_id}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
-        save_path = os.path.join(DIGITAL_IMAGE_DIR, filename)
-        contents = await image.read()
-        with open(save_path, "wb") as f:
-            f.write(contents)
-        print(f"📸 Digital画像を保存しました: {save_path}")
+            notify_server(inference_running=True)
 
-    new_digital = GAME_MAP.get(game_id, "不明")
+            image_path = "boardgame.jpg"
+            Image.fromarray(current_frame).save(image_path)
 
-    if game_id != state.last_digital_id:
-        if state.last_digital_id is not None and state.last_digital_id != "0":
-            send_log(state.last_digital_id, now, 2)
-        if game_id != "0":
-            send_log(game_id, now, 1)
+            result = recognize_boardgame(image_path)
+            analog_id, confidence, reason = parse_result(result)
 
-        state.last_digital_id = game_id
-        state.digital = new_digital
-        send_slack()
+            if confidence < CONFIDENCE_THRESHOLD:
+                analog_id = "0"
 
-    return {"digital_status_id": game_id, "digital_status_name": state.digital}
+            print(f"🎮 推定ID: {analog_id} (信頼度: {confidence}%)")
+            write_prediction_log(result, analog_id, confidence, reason)
 
-@app.post("/events")
-async def events(request: Request):
-    data = await request.json()
-    if data.get("type") == "url_verification":
-        return {"challenge": data["challenge"]}
-    return {"status": "ok"}
+            state.last_analog_id = analog_id
+            state.analog = ANALOG_GAME_MAP.get(analog_id, "不明")
+            state.analog_updated_at = datetime.now(JST).isoformat()
+
+            notify_server(analog_id=analog_id, inference_running=False, image_path=image_path)
+
+            previous_frame = current_frame
+
+        except TimeoutException as e:
+            print(f"⚠️ カメラキャプチャがタイムアウトしました: {e}")
+            notify_server(inference_running=False)
+        except Exception as e:
+            print("推定処理エラー:", e)
+            notify_server(inference_running=False)
+
+if __name__ == "__main__":
+    try:
+        inference_loop()
+    except KeyboardInterrupt:
+        print("\n⏹️ 終了処理中...体操します")
+        picam2.stop()
+        print("Camera stopped")
