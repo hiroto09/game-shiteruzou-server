@@ -5,3 +5,4 @@ fastapi
 uvicorn
 slack_sdk
 pydantic
+python-multipart
