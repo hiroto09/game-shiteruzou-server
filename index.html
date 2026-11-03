@@ -25,10 +25,11 @@
         .btn-resume { background-color: #f9ab00; color: #202124; width: 100%; margin-top: 15px; padding: 12px; font-size: 1rem; border-radius: 6px; font-weight: bold; display: none; }
         .btn-resume:hover { background-color: #e39900; }
         
-        .member-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-        .member-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1px solid #ccc; border-radius: 8px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; }
+        /* メンバーを羅列するスタイル（横並び・ラップ） */
+        .member-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .member-item { display: inline-flex; align-items: center; padding: 8px 16px; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; font-size: 0.95rem; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
-        .member-name { font-size: 1rem; }
+        .member-name { font-size: 0.95rem; }
     </style>
 </head>
 <body>
@@ -91,7 +92,7 @@
             
             const currentGameId = String(data.confirmed.analog_id);
             
-            // 状態が切り替われたときの処理
+            // 状態が切り替わったときの処理
             await handleGameStateChange(currentGameId, data.selected_members || []);
 
             updateSelectorOptions(currentGameId);
@@ -186,7 +187,7 @@
 
             let members = data.members || [];
 
-            // 🎯 既に選択されているメンバーを上の方に持ってくるソート
+            // 🎯 既に選択されているメンバーを上（前）の方に持ってくるソート
             members.sort((a, b) => {
                 const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
                 const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
@@ -197,7 +198,7 @@
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
                 
-                // 画面には名前のみを表示する
+                // 画面には名前のみを表示する（ピル型のボタン要素として羅列）
                 item.innerHTML = `
                     <span class="member-name">${m.name}</span>
                 `;
@@ -229,7 +230,7 @@
         fetchMembers();
     }
 
-    // メンバー情報をサーバーに保存する関数（idとnameを保持したまま送信）
+    // メンバー情報をサーバーに保存する関数
     async function saveSelectedMembers() {
         await fetch('/api/members', {
             method: 'POST',
