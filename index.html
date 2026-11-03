@@ -25,11 +25,9 @@
         .btn-resume { background-color: #f9ab00; color: #202124; width: 100%; margin-top: 15px; padding: 12px; font-size: 1rem; border-radius: 6px; font-weight: bold; display: none; }
         .btn-resume:hover { background-color: #e39900; }
         
-        /* メンバーを羅列するスタイル（横並び・ラップ） */
         .member-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-        .member-item { display: inline-flex; align-items: center; padding: 8px 16px; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; font-size: 0.95rem; }
+        .member-item { padding: 6px 12px; border: 1px solid #ccc; border-radius: 16px; cursor: pointer; user-select: none; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
-        .member-name { font-size: 0.95rem; }
     </style>
 </head>
 <body>
@@ -46,9 +44,9 @@
     </div>
 
     <div>
-        <h3>アナログゲーム手動登録</h3>
+        <h3>アナログゲーム手動修正</h3>
         <p style="font-size: 0.85rem; color: #666; margin-top: -5px;">
-            推定されない・誤推定された場合は手動で登録・修正できます。
+            VLMの誤認識時に手動で変更・登録できます。
         </p>
         <div class="control-group">
             <select id="game-selector">
@@ -74,7 +72,6 @@
     let currentAnalogMap = {};
     let selectedMembers = [];
     let isManualMode = false;
-    let previousGameId = null; // 前回のゲームIDを保持
 
     async function init() {
         await fetchStatus();
@@ -90,39 +87,12 @@
             currentAnalogMap = data.analog_game_map || {};
             isManualMode = data.is_manual_mode;
             
-            const currentGameId = String(data.confirmed.analog_id);
-            
-            // 状態が切り替わったときの処理
-            await handleGameStateChange(currentGameId, data.selected_members || []);
-
-            updateSelectorOptions(currentGameId);
+            updateSelectorOptions(data.confirmed.analog_id);
             renderStatus(data.confirmed.game_name, isManualMode);
+            selectedMembers = data.selected_members || [];
         } catch (e) {
             console.error("ステータス取得エラー:", e);
         }
-    }
-
-    // ゲームIDが切り替わった時の判定ロジック
-    async function handleGameStateChange(currentGameId, serverMembers) {
-        if (previousGameId !== null) {
-            // パターン1: 「0」から「その他」へ変わった瞬間
-            if (previousGameId === "0" && currentGameId !== "0") {
-                console.log("0 -> その他のゲームへ移行: 選択中メンバーをサーバーに送信します");
-                await saveSelectedMembers();
-            }
-            // パターン2: 「その他」から「0」へ変わった瞬間
-            else if (previousGameId !== "0" && currentGameId === "0") {
-                console.log("その他のゲーム -> 0へ移行: メンバーをリセットします");
-                selectedMembers = [];
-                await saveSelectedMembers();
-            }
-        }
-        
-        if (currentGameId !== "0" && selectedMembers.length === 0 && serverMembers.length > 0) {
-            selectedMembers = serverMembers;
-        }
-
-        previousGameId = currentGameId;
     }
 
     // アナログゲームのみをセレクターにセット
@@ -159,9 +129,6 @@
 
     async function setManualGame() {
         const analogId = document.getElementById('game-selector').value;
-        
-        await handleGameStateChange(String(analogId), selectedMembers);
-
         await fetch('/api/manual_update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -177,33 +144,13 @@
         try {
             const res = await fetch('/api/members');
             const data = await res.json();
-            
-            if (previousGameId !== "0" && data.selected_members && selectedMembers.length === 0) {
-                selectedMembers = data.selected_members;
-            }
-
             const container = document.getElementById('member-container');
             container.innerHTML = '';
 
-            let members = data.members || [];
-
-            // 🎯 既に選択されているメンバーを上（前）の方に持ってくるソート
-            members.sort((a, b) => {
-                const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
-                const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
-                return bSelected - aSelected;
-            });
-
-            members.forEach(m => {
+            data.members.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
-                
-                // 画面には名前のみを表示する（ピル型のボタン要素として羅列）
-                item.innerHTML = `
-                    <span class="member-name">${m.name}</span>
-                `;
-                
-                // クリック時はidを元に切り替え処理を実行
+                item.innerText = m.name;
                 item.onclick = () => toggleMember(m.id);
                 container.appendChild(item);
             });
@@ -218,32 +165,19 @@
         } else {
             selectedMembers.push(memberId);
         }
-        
-        renderMemberSelection();
-        
-        if (previousGameId !== "0") {
-            await saveSelectedMembers();
-        }
-    }
-
-    function renderMemberSelection() {
-        fetchMembers();
-    }
-
-    // メンバー情報をサーバーに保存する関数
-    async function saveSelectedMembers() {
         await fetch('/api/members', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ members: selectedMembers })
         });
+        fetchMembers();
     }
 
     function connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
-        ws.onmessage = async (event) => {
+        ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.analog_game_map) {
                 currentAnalogMap = data.analog_game_map;
@@ -253,14 +187,12 @@
             renderStatus(data.analog, isManualMode);
             
             if (data.analog_id !== undefined) {
-                const currentGameId = String(data.analog_id);
-                
-                await handleGameStateChange(currentGameId, data.selected_members || []);
-
-                updateSelectorOptions(currentGameId);
+                updateSelectorOptions(data.analog_id);
             }
-            
-            fetchMembers();
+            if (data.selected_members !== undefined) {
+                selectedMembers = data.selected_members;
+                fetchMembers();
+            }
         };
 
         ws.onclose = () => {

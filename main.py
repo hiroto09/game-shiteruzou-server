@@ -305,19 +305,7 @@ async def api_status():
 async def api_get_members():
     loop = asyncio.get_event_loop()
     stayers = await loop.run_in_executor(None, get_stayers)
-    
-    # 滞在ウォッチAPIから返されるユーザー情報（id, name, tags, email, role, communityName 等）をそのままマッピング
-    members_data = []
-    for s in stayers:
-        members_data.append({
-            "id": s.get("id"),
-            "name": s.get("name"),
-            "tags": s.get("tags", []),
-            "email": s.get("email"),
-            "role": s.get("role"),
-            "communityName": s.get("communityName")
-        })
-    return {"members": members_data}
+    return {"members": [{"id": s["id"], "name": s["name"]} for s in stayers]}
 
 @app.post("/api/members")
 async def api_post_members(request: Request):
