@@ -25,9 +25,11 @@
         .btn-resume { background-color: #f9ab00; color: #202124; width: 100%; margin-top: 15px; padding: 12px; font-size: 1rem; border-radius: 6px; font-weight: bold; display: none; }
         .btn-resume:hover { background-color: #e39900; }
         
+        /* メンバーを横並びに羅列するスタイル */
         .member-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-        .member-item { padding: 6px 12px; border: 1px solid #ccc; border-radius: 16px; cursor: pointer; user-select: none; }
+        .member-item { display: inline-flex; align-items: center; padding: 8px 16px; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; user-select: none; background: #fff; transition: all 0.2s; font-size: 0.95rem; }
         .member-item.selected { background-color: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
+        .member-name { font-size: 0.95rem; }
     </style>
 </head>
 <body>
@@ -72,7 +74,7 @@
     let currentAnalogMap = {};
     let selectedMembers = [];
     let isManualMode = false;
-    let previousGameId = null; // 前回のゲームIDを保持
+    let previousGameId = null;
 
     async function init() {
         await fetchStatus();
@@ -90,7 +92,6 @@
             
             const currentGameId = String(data.confirmed.analog_id);
             
-            // 状態が切り替わったときの処理
             await handleGameStateChange(currentGameId, data.selected_members || []);
 
             updateSelectorOptions(currentGameId);
@@ -100,24 +101,19 @@
         }
     }
 
-    // ゲームIDが切り替わった時の判定ロジック
     async function handleGameStateChange(currentGameId, serverMembers) {
         if (previousGameId !== null) {
-            // パターン1: 「0」から「その他」へ変わった瞬間
+            // 「0」から「その他」へ変わった瞬間：選択中のメンバーを送信
             if (previousGameId === "0" && currentGameId !== "0") {
-                console.log("0 -> その他のゲームへ移行: 選択中メンバーをサーバーに送信します");
                 await saveSelectedMembers();
             }
-            // パターン2: 「その他」から「0」へ変わった瞬間
+            // 「その他」から「0」へ変わった瞬間：メンバーをリセット
             else if (previousGameId !== "0" && currentGameId === "0") {
-                console.log("その他のゲーム -> 0へ移行: メンバーをリセットします");
                 selectedMembers = [];
                 await saveSelectedMembers();
             }
         }
         
-        // 初回ロード時や、ゲームが「0」のときはサーバー側の選択状態に縛られず手元の保持を優先、
-        // もし「その他」のときでまだ手元が空ならサーバーから取得を反映
         if (currentGameId !== "0" && selectedMembers.length === 0 && serverMembers.length > 0) {
             selectedMembers = serverMembers;
         }
@@ -125,7 +121,6 @@
         previousGameId = currentGameId;
     }
 
-    // アナログゲームのみをセレクターにセット
     function updateSelectorOptions(selectedId) {
         const selector = document.getElementById('game-selector');
         selector.innerHTML = '';
@@ -160,7 +155,9 @@
     async function setManualGame() {
         const analogId = document.getElementById('game-selector').value;
         
-        // 手動登録時も 0 -> その他 の切り替わりであれば送信を実行
+        isManualMode = true; // 手動モードフラグを即座に有効化
+        renderStatus(currentAnalogMap[analogId] || "手動選択ゲーム", true);
+
         await handleGameStateChange(String(analogId), selectedMembers);
 
         await fetch('/api/manual_update', {
@@ -171,7 +168,10 @@
     }
 
     async function resumeAutoMode() {
+        isManualMode = false;
         await fetch('/api/resume_auto', { method: 'POST' });
+        await fetchStatus();
+        await fetchMembers();
     }
 
     async function fetchMembers() {
@@ -179,7 +179,6 @@
             const res = await fetch('/api/members');
             const data = await res.json();
             
-            // 初回や同期用にサーバーのメンバーを取り込む（ただし「0」のときはローカル編集を維持するためサーバー側の強制上書きを防ぐなど調整可）
             if (previousGameId !== "0" && data.selected_members && selectedMembers.length === 0) {
                 selectedMembers = data.selected_members;
             }
@@ -187,10 +186,22 @@
             const container = document.getElementById('member-container');
             container.innerHTML = '';
 
-            data.members.forEach(m => {
+            let members = data.members || [];
+
+            // 選択済みのメンバーを上（前）に寄せるソート
+            members.sort((a, b) => {
+                const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
+                const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
+                return bSelected - aSelected;
+            });
+
+            members.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
-                item.innerText = m.name;
+                
+                // 画面には名前のみを表示（データとしてはidを維持）
+                item.innerHTML = `<span class="member-name">${m.name}</span>`;
+                
                 item.onclick = () => toggleMember(m.id);
                 container.appendChild(item);
             });
@@ -206,45 +217,17 @@
             selectedMembers.push(memberId);
         }
         
-        // メンバーをクリックした時点ではサーバーへ送信せず、画面上の選択状態（見た目）だけを更新する
         renderMemberSelection();
         
-        // もし「現在のゲームが 0 以外」であれば、クリックと同時に保存したい場合はここを有効にできますが、
-        // 「送信はせず選択状態を維持」の要件に合わせ、0のときはサーバー送信しません。
         if (previousGameId !== "0") {
             await saveSelectedMembers();
         }
     }
 
-    // 画面のメンバー選択状態（クラス）だけを再描画する軽量関数
-    async function fetchMembers() {
-        try {
-            const res = await fetch('/api/members');
-            const data = await res.json();
-            
-            const container = document.getElementById('member-container');
-            container.innerHTML = '';
-
-            data.members.forEach(m => {
-                const item = document.createElement('div');
-                item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
-                item.innerText = m.name;
-                item.onclick = () => toggleMember(m.id);
-                container.appendChild(item);
-            });
-        } catch (e) {
-            console.error("メンバー取得エラー:", e);
-        }
-    }
-
     function renderMemberSelection() {
-        const items = document.querySelectorAll('.member-item');
-        // 各要素のデータ属性やインデックス等に合わせて見た目を更新
-        // ここではシンプルに一度DOMを再描画する関数を呼ぶかクラスを切り替えます
         fetchMembers();
     }
 
-    // メンバー情報をサーバーに保存する関数
     async function saveSelectedMembers() {
         await fetch('/api/members', {
             method: 'POST',
@@ -259,6 +242,12 @@
 
         ws.onmessage = async (event) => {
             const data = JSON.parse(event.data);
+            
+            // 🛑 手動モード時は自動更新通知による画面の勝手な上書きを防止
+            if (isManualMode && !data.is_manual_mode) {
+                return;
+            }
+
             if (data.analog_game_map) {
                 currentAnalogMap = data.analog_game_map;
             }
@@ -268,10 +257,7 @@
             
             if (data.analog_id !== undefined) {
                 const currentGameId = String(data.analog_id);
-                
-                // WebSocket経由で状態が変わった際の状態判定
                 await handleGameStateChange(currentGameId, data.selected_members || []);
-
                 updateSelectorOptions(currentGameId);
             }
             
