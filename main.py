@@ -64,7 +64,7 @@ async def ip_restriction_middleware(request: Request, call_next):
         if client_ip not in ALLOWED_IPS:
             print(f"🚨 拒否されたIPからのアクセス: {client_ip} (Path: {request.url.path})")
             return Response(content="Access Denied", status_code=403)
-    
+
     response = await call_next(request)
     return response
 
@@ -79,13 +79,15 @@ class State:
         self.last_digital = None
         self.last_digital_id = None
         self.digital_start_time = None
+        self.digital_members = []
+        self.last_digital_member_id = None
 
         # analog
         self.analog = "何もしてない"
         self.last_analog_id = "0"
         self.analog_members = []
         self.analog_updated_at = None
-        
+
         # inference status
         self.inference_running = False
 
@@ -102,7 +104,7 @@ def update_game_map():
     global GAME_MAP, ANALOG_GAME_MAP
     try:
         print("🎲 ゲーム一覧を取得しています...")
-        
+
         # 1. 全ゲームの取得（デジタル・アナログ両方）
         response_all = requests.get(EVENTS_API_URL, timeout=10)
         response_all.raise_for_status()
@@ -112,8 +114,8 @@ def update_game_map():
 
         # 2. アナログゲーム専用の取得
         response_analog = requests.get(
-            EVENTS_API_URL, 
-            params={"game_type": "analog"}, 
+            EVENTS_API_URL,
+            params={"game_type": "analog"},
             timeout=10
         )
         response_analog.raise_for_status()
@@ -124,7 +126,7 @@ def update_game_map():
         # グローバル変数に反映
         GAME_MAP = new_game_map
         ANALOG_GAME_MAP = new_analog_map
-        
+
         print(f"✅ ゲーム一覧取得完了 (全件: {len(GAME_MAP)-1}件, アナログのみ: {len(ANALOG_GAME_MAP)-1}件)")
     except Exception as e:
         print("❌ ゲーム一覧取得エラー:", e)
@@ -164,6 +166,36 @@ def get_users():
     return []
 
 # =========================
+# ヘルパー関数
+# =========================
+
+def parse_member_ids(raw_member_id):
+    """
+    member_id（単一int/str、リスト、またはnull/空文字）を整数IDリストに変換する。
+    無効・nullの場合は [] を返す。
+    """
+    if raw_member_id is None:
+        return []
+
+    if isinstance(raw_member_id, list):
+        result = []
+        for item in raw_member_id:
+            parsed = parse_member_ids(item)
+            for p in parsed:
+                if p not in result:
+                    result.append(p)
+        return result
+
+    s = str(raw_member_id).strip().strip('"').strip("'").lower()
+    if s in ("", "null", "none", "nan"):
+        return []
+
+    try:
+        return [int(s)]
+    except ValueError:
+        return []
+
+# =========================
 # ログ送信・Slack送信
 # =========================
 
@@ -177,7 +209,7 @@ def send_log(event_id, event_time, status, members=None, room_users=None):
             "event_time": event_time,
             "status_id": int(status)
         }
-        
+
         if members is not None:
             log_data["participate_users"] = [int(m) for m in members]
         else:
@@ -192,14 +224,18 @@ def send_log(event_id, event_time, status, members=None, room_users=None):
         print(f"LOG SEND: id={event_id} status={status} participants={log_data['participate_users']} HTTP={res.status_code}")
     except Exception as e:
         print("ログ送信エラー:", e)
-        
+
 def send_slack():
     try:
+        digital_text = f"🎮 {state.digital}"
+        if state.digital != "何もしてない" and state.digital_members:
+            digital_text += f" (参加者ID: {state.digital_members})"
+
         slack_client.chat_postMessage(
             channel=CHANNEL,
             text="状態更新",
             blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🎮 {state.digital}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": digital_text}},
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
             ]
         )
@@ -220,6 +256,9 @@ async def websocket_endpoint(ws: WebSocket):
         "analog": state.analog,
         "analog_id": state.last_analog_id,
         "selected_members": state.analog_members,
+        "digital": state.digital,
+        "digital_id": state.last_digital_id,
+        "digital_members": state.digital_members,
         "is_manual_mode": state.is_manual_mode,
         "analog_game_map": ANALOG_GAME_MAP,
         "users": []
@@ -239,13 +278,13 @@ async def notify():
             loop = asyncio.get_event_loop()
             stayers = await loop.run_in_executor(None, get_stayers)
             all_users = await loop.run_in_executor(None, get_users)
-            
+
             # stayers と all_users の両方から名前を検索
             combined = {s["id"]: s["name"] for s in stayers}
             for u in all_users:
                 if u["id"] not in combined:
                     combined[u["id"]] = u["name"]
-                    
+
             users = [combined[m_id] for m_id in state.analog_members if m_id in combined]
         except Exception as e:
             print("stayers取得エラー:", e)
@@ -256,6 +295,9 @@ async def notify():
                 "analog": state.analog,
                 "analog_id": state.last_analog_id,
                 "selected_members": state.analog_members,
+                "digital": state.digital,
+                "digital_id": state.last_digital_id,
+                "digital_members": state.digital_members,
                 "is_manual_mode": state.is_manual_mode,
                 "analog_game_map": ANALOG_GAME_MAP,
                 "users": users
@@ -321,6 +363,13 @@ async def api_status():
             "game_name": state.analog,
             "updated_at": state.analog_updated_at
         },
+        "digital": {
+            "digital_id": state.last_digital_id,
+            "game_name": state.digital,
+            "members": state.digital_members,
+            "member_id": state.last_digital_member_id,
+            "started_at": state.digital_start_time
+        },
         "selected_members": state.analog_members,
         "inference_running": state.inference_running,
         "is_manual_mode": state.is_manual_mode,
@@ -339,31 +388,57 @@ async def api_get_members():
 
     # 滞在者のID一覧
     stayer_ids = {s["id"] for s in stayers}
-    
+
     # リスト構造を統一
     stayer_list = [{"id": s["id"], "name": s["name"], "is_stayer": True} for s in stayers]
-    
+
     # stayers で取得できなかったユーザーを抽出
     non_stayer_list = [
         {"id": u["id"], "name": u["name"], "is_stayer": False}
         for u in users if u["id"] not in stayer_ids
     ]
-    
+
     # 滞在者を上に、それ以外を下に配置
     combined_members = stayer_list + non_stayer_list
 
     return {
         "members": combined_members,
-        "selected_members": state.analog_members
+        "selected_members": state.analog_members,
+        "digital_members": state.digital_members
     }
 
 @app.post("/api/members")
 async def api_post_members(request: Request):
     data = await request.json()
     members = data.get("members", [])
-    
+
     await handle_analog_change(state.last_analog_id, members)
     return {"status": "ok", "selected_members": state.analog_members}
+
+@app.post("/api/digital/members")
+async def api_post_digital_members(request: Request):
+    """デジタルゲーム側の参加者を手動登録・更新するAPI"""
+    data = await request.json()
+    raw_members = data.get("members")
+    if raw_members is None and "member_id" in data:
+        raw_members = data.get("member_id")
+
+    parsed_members = parse_member_ids(raw_members)
+    now = datetime.now(JST).isoformat()
+
+    state.digital_members = parsed_members
+    state.last_digital_member_id = parsed_members[0] if parsed_members else None
+
+    if state.last_digital_id and state.last_digital_id != "0":
+        send_log(state.last_digital_id, now, 1, members=state.digital_members)
+
+    await notify()
+    return {
+        "status": "ok",
+        "digital_id": state.last_digital_id,
+        "digital_members": state.digital_members,
+        "member_id": state.last_digital_member_id
+    }
 
 # 🛠️ アナログゲーム専用の手動登録・更新API
 @app.post("/api/manual_update")
@@ -372,7 +447,7 @@ async def api_manual_update(request: Request):
     analog_id = str(data.get("analog_id", "0"))
 
     state.is_manual_mode = True
-    
+
     await handle_analog_change(analog_id, state.analog_members)
     await notify()
     return {"status": "ok", "is_manual_mode": state.is_manual_mode, "analog_id": state.last_analog_id}
@@ -381,7 +456,7 @@ async def api_manual_update(request: Request):
 @app.post("/api/resume_auto")
 async def api_resume_auto():
     now = datetime.now(JST).isoformat()
-    
+
     if state.last_analog_id != "0":
         send_log(state.last_analog_id, now, 2, members=state.analog_members)
 
@@ -390,13 +465,13 @@ async def api_resume_auto():
     state.analog_members = []
     state.analog_updated_at = now
     state.is_manual_mode = False
-    
+
     print("🔄 手動モード解除: 状態を『何もしてない(0)』にリセットしました。")
-    
+
     send_slack()
     await notify()
     return {
-        "status": "ok", 
+        "status": "ok",
         "is_manual_mode": state.is_manual_mode,
         "analog_id": state.last_analog_id,
         "analog": state.analog
@@ -414,7 +489,7 @@ async def analog_endpoint(
     image: UploadFile = File(None)
 ):
     content_type = request.headers.get("content-type", "")
-    
+
     if "application/json" in content_type:
         data = await request.json()
         recv_analog_id = data.get("analog_id")
@@ -428,7 +503,7 @@ async def analog_endpoint(
 
     if recv_analog_id is not None:
         analog_id_str = str(recv_analog_id)
-        
+
         if image is not None:
             filename = image.filename if image.filename else f"{analog_id_str}_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.jpg"
             save_path = os.path.join(ANALOG_IMAGE_DIR, filename)
@@ -444,7 +519,7 @@ async def analog_endpoint(
             print(f"🛑 Raspi -> Analog ID: {analog_id_str} (手動モード中のため無視されました)")
 
     return {
-        "status": "ok", 
+        "status": "ok",
         "is_manual_mode": state.is_manual_mode,
         "current_analog_id": state.last_analog_id
     }
@@ -457,21 +532,28 @@ async def analog_endpoint(
 async def result(
     request: Request,
     class_id: str = Form(None),
+    member_id: str = Form(None),
     image: UploadFile = File(None)
 ):
     content_type = request.headers.get("content-type", "")
-    
+
     if "application/json" in content_type:
         data = await request.json()
         try:
             game_id = str(int(data["class_id"]))
         except Exception:
             raise HTTPException(422, "Invalid JSON")
+        raw_member_id = data.get("member_id")
     else:
         if class_id is None:
             raise HTTPException(422, "Missing class_id")
-        game_id = str(int(class_id))
+        try:
+            game_id = str(int(class_id))
+        except Exception:
+            raise HTTPException(422, "Invalid class_id")
+        raw_member_id = member_id
 
+    parsed_members = parse_member_ids(raw_member_id)
     now = datetime.now(JST).isoformat()
 
     if image is not None:
@@ -484,17 +566,51 @@ async def result(
 
     new_digital = GAME_MAP.get(game_id, "不明")
 
-    if game_id != state.last_digital_id:
+    if game_id == "0":
         if state.last_digital_id is not None and state.last_digital_id != "0":
-            send_log(state.last_digital_id, now, 2)
-        if game_id != "0":
-            send_log(game_id, now, 1)
+            send_log(state.last_digital_id, now, 2, members=state.digital_members)
 
+        prev_digital = state.digital
+        state.last_digital = state.digital
+        state.last_digital_id = "0"
+        state.digital = new_digital
+        state.digital_start_time = None
+        state.digital_members = []
+        state.last_digital_member_id = None
+
+        if prev_digital != state.digital:
+            send_slack()
+        await notify()
+    elif game_id != state.last_digital_id:
+        if state.last_digital_id is not None and state.last_digital_id != "0":
+            send_log(state.last_digital_id, now, 2, members=state.digital_members)
+
+        send_log(game_id, now, 1, members=parsed_members)
+
+        state.last_digital = state.digital
         state.last_digital_id = game_id
         state.digital = new_digital
-        send_slack()
+        state.digital_start_time = now
+        state.digital_members = parsed_members
+        state.last_digital_member_id = parsed_members[0] if parsed_members else None
 
-    return {"digital_status_id": game_id, "digital_status_name": state.digital}
+        send_slack()
+        await notify()
+    else:
+        # 同じデジタルゲームが継続している場合、参加者IDが更新・確定したら反映
+        if parsed_members and parsed_members != state.digital_members:
+            state.digital_members = parsed_members
+            state.last_digital_member_id = parsed_members[0]
+            send_log(game_id, now, 1, members=state.digital_members)
+            send_slack()
+            await notify()
+
+    return {
+        "digital_status_id": game_id,
+        "digital_status_name": state.digital,
+        "member_id": state.last_digital_member_id,
+        "digital_members": state.digital_members
+    }
 
 @app.post("/events")
 async def events(request: Request):
