@@ -165,13 +165,38 @@ def get_users():
         print("🔥 staywatch API (users) エラー:", e)
     return []
 
+def resolve_member_names(member_ids):
+    """member_idのリストを受け取り、対応するユーザー名のリストを返す"""
+    if not member_ids:
+        return []
+
+    stayers = get_stayers()
+    all_users = get_users()
+
+    id_to_name = {}
+    for u in all_users:
+        if isinstance(u, dict) and "id" in u and "name" in u:
+            id_to_name[int(u["id"])] = u["name"]
+    for s in stayers:
+        if isinstance(s, dict) and "id" in s and "name" in s:
+            id_to_name[int(s["id"])] = s["name"]
+
+    names = []
+    for m_id in member_ids:
+        try:
+            int_id = int(m_id)
+            names.append(id_to_name.get(int_id, f"ID:{int_id}"))
+        except (ValueError, TypeError):
+            continue
+    return names
+
 # =========================
 # ヘルパー関数
 # =========================
 
 def parse_member_ids(raw_member_id):
     """
-    member_id（単一int/str、リスト、またはnull/空文字）を整数IDリストに変換する。
+    member_id（単一int/str、カンマ区切りstr、リスト、またはnull/空文字）を整数IDリストに変換する。
     無効・nullの場合は [] を返す。
     """
     if raw_member_id is None:
@@ -186,9 +211,18 @@ def parse_member_ids(raw_member_id):
                     result.append(p)
         return result
 
-    s = str(raw_member_id).strip().strip('"').strip("'").lower()
-    if s in ("", "null", "none", "nan"):
+    s = str(raw_member_id).strip().strip('"').strip("'").strip("[]")
+    if s.lower() in ("", "null", "none", "nan"):
         return []
+
+    s = s.replace("、", ",").replace("，", ",")
+    if "," in s:
+        result = []
+        for part in s.split(","):
+            for p in parse_member_ids(part):
+                if p not in result:
+                    result.append(p)
+        return result
 
     try:
         return [int(s)]
@@ -229,14 +263,22 @@ def send_slack():
     try:
         digital_text = f"🎮 {state.digital}"
         if state.digital != "何もしてない" and state.digital_members:
-            digital_text += f" (参加者ID: {state.digital_members})"
+            digital_names = resolve_member_names(state.digital_members)
+            if digital_names:
+                digital_text += f" (参加者: {', '.join(digital_names)})"
+
+        analog_text = f"🃏 {state.analog}"
+        if state.analog != "何もしてない" and state.analog_members:
+            analog_names = resolve_member_names(state.analog_members)
+            if analog_names:
+                analog_text += f" (参加者: {', '.join(analog_names)})"
 
         slack_client.chat_postMessage(
             channel=CHANNEL,
             text="状態更新",
             blocks=[
                 {"type": "section", "text": {"type": "mrkdwn", "text": digital_text}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🃏 {state.analog}"}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": analog_text}}
             ]
         )
     except Exception as e:
@@ -276,16 +318,7 @@ async def notify():
     if state.analog != "何もしてない":
         try:
             loop = asyncio.get_event_loop()
-            stayers = await loop.run_in_executor(None, get_stayers)
-            all_users = await loop.run_in_executor(None, get_users)
-
-            # stayers と all_users の両方から名前を検索
-            combined = {s["id"]: s["name"] for s in stayers}
-            for u in all_users:
-                if u["id"] not in combined:
-                    combined[u["id"]] = u["name"]
-
-            users = [combined[m_id] for m_id in state.analog_members if m_id in combined]
+            users = await loop.run_in_executor(None, resolve_member_names, state.analog_members)
         except Exception as e:
             print("stayers取得エラー:", e)
 
@@ -334,9 +367,11 @@ async def handle_analog_change(new_id, new_members):
 
             state.last_analog_id = new_id
             state.analog = new_name
+            state.analog_members = new_members
             send_slack()
+        else:
+            state.analog_members = new_members
 
-        state.analog_members = new_members
         state.analog_updated_at = now
         changed = True
 
@@ -431,6 +466,7 @@ async def api_post_digital_members(request: Request):
 
     if state.last_digital_id and state.last_digital_id != "0":
         send_log(state.last_digital_id, now, 1, members=state.digital_members)
+        send_slack()
 
     await notify()
     return {
