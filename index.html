@@ -84,6 +84,7 @@
 
 <script>
     let currentAnalogMap = {};
+    let allMembersCache = [];
     let selectedMembers = [];
     let isManualMode = false;
     let previousGameId = null;
@@ -118,7 +119,6 @@
         const gameChanged = (previousGameId !== null && previousGameId !== currentGameId);
 
         if (gameChanged) {
-            // ゲームが変わった場合はサーバー側のメンバー配列を正として同期
             selectedMembers = Array.isArray(serverMembers) ? [...serverMembers] : [];
             if (previousGameId === "0" && currentGameId !== "0" && selectedMembers.length > 0) {
                 await saveSelectedMembers();
@@ -126,8 +126,12 @@
                 selectedMembers = [];
                 await saveSelectedMembers();
             }
-        } else if (currentGameId !== "0" && selectedMembers.length === 0 && Array.isArray(serverMembers) && serverMembers.length > 0) {
-            selectedMembers = [...serverMembers];
+        } else if (Array.isArray(serverMembers)) {
+            if (currentGameId !== "0") {
+                selectedMembers = [...serverMembers];
+            } else if (previousGameId === null) {
+                selectedMembers = [...serverMembers];
+            }
         }
 
         previousGameId = currentGameId;
@@ -175,6 +179,7 @@
         renderStatus(currentAnalogMap[analogId] || "手動選択ゲーム", true);
 
         await handleGameStateChange(analogId, selectedMembers);
+        renderMemberList();
 
         await fetch('/api/manual_update', {
             method: 'POST',
@@ -187,6 +192,7 @@
         isManualMode = false;
         selectedMembers = [];
         previousGameId = "0";
+        renderMemberList();
         await fetch('/api/resume_auto', { method: 'POST' });
         await fetchStatus();
         await fetchMembers();
@@ -197,36 +203,42 @@
             const res = await fetch('/api/members');
             const data = await res.json();
             
-            if (previousGameId !== "0" && Array.isArray(data.selected_members) && selectedMembers.length === 0) {
-                selectedMembers = [...data.selected_members];
+            allMembersCache = Array.isArray(data.members) ? data.members : [];
+
+            if (Array.isArray(data.selected_members)) {
+                if (previousGameId !== "0" || selectedMembers.length === 0) {
+                    selectedMembers = [...data.selected_members];
+                }
             }
 
-            const container = document.getElementById('member-container');
-            container.innerHTML = '';
-
-            const allMembers = data.members || [];
-            
-            const displayedMembers = allMembers.filter(m => m.is_stayer || selectedMembers.includes(m.id));
-            const hiddenMembers = allMembers.filter(m => !m.is_stayer && !selectedMembers.includes(m.id));
-
-            displayedMembers.sort((a, b) => {
-                const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
-                const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
-                return bSelected - aSelected;
-            });
-
-            displayedMembers.forEach(m => {
-                const item = document.createElement('div');
-                item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
-                item.innerHTML = `<span class="member-name">${m.name}</span>`;
-                item.onclick = () => toggleMember(m.id);
-                container.appendChild(item);
-            });
-
-            updateMissingSelector(hiddenMembers);
+            renderMemberList();
         } catch (e) {
             console.error("メンバー取得エラー:", e);
         }
+    }
+
+    function renderMemberList() {
+        const container = document.getElementById('member-container');
+        container.innerHTML = '';
+
+        const displayedMembers = allMembersCache.filter(m => m.is_stayer || selectedMembers.includes(m.id));
+        const hiddenMembers = allMembersCache.filter(m => !m.is_stayer && !selectedMembers.includes(m.id));
+
+        displayedMembers.sort((a, b) => {
+            const aSelected = selectedMembers.includes(a.id) ? 1 : 0;
+            const bSelected = selectedMembers.includes(b.id) ? 1 : 0;
+            return bSelected - aSelected;
+        });
+
+        displayedMembers.forEach(m => {
+            const item = document.createElement('div');
+            item.className = 'member-item' + (selectedMembers.includes(m.id) ? ' selected' : '');
+            item.innerHTML = `<span class="member-name">${m.name}</span>`;
+            item.onclick = () => toggleMember(m.id);
+            container.appendChild(item);
+        });
+
+        updateMissingSelector(hiddenMembers);
     }
 
     function updateMissingSelector(hiddenMembers) {
@@ -248,7 +260,7 @@
             selectedMembers.push(memberId);
         }
         
-        await fetchMembers();
+        renderMemberList();
         
         if (previousGameId !== "0") {
             await saveSelectedMembers();
@@ -264,7 +276,7 @@
             selectedMembers.push(selectedId);
         }
 
-        await fetchMembers();
+        renderMemberList();
         if (previousGameId !== "0") {
             await saveSelectedMembers();
         }
@@ -289,7 +301,6 @@
                 currentAnalogMap = data.analog_game_map;
             }
 
-            // 手動モード中に自動更新通知が来た場合はモードバッジのみ維持し、ゲームタイトルやIDの変化は反映
             if (typeof data.is_manual_mode === "boolean") {
                 if (!(isManualMode && !data.is_manual_mode)) {
                     isManualMode = data.is_manual_mode;
